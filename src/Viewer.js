@@ -196,6 +196,7 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     const dataW = maxX - minX || bedW;
     const dataH = maxY - minY || bedH;
     const scale = Math.min(availableW / dataW, availableH / dataH);
+    console.log(`[Viewer Debug] bedW=${bedW}, bedH=${bedH}, minX=${minX}, maxX=${maxX}, minY=${minY}, maxY=${maxY}, scale=${scale}, availableW=${availableW}, availableH=${availableH}, dataW=${dataW}, dataH=${dataH}`);
 
     // Center the bounding box in the canvas
     const centerX = (minX + maxX) / 2;

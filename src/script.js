@@ -36,6 +36,8 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js';
+import { CanvasEditor } from './CanvasEditor.js';
+
 
 /**
  * @file script.js
@@ -426,23 +428,10 @@ editor.addEventListener('input', () => {
     state.gcode = editor.value;
 });
 
-// --- Initialization ---
-
-// Setup the Tab clicking logic (Preview vs Editor)
-setupTabs(() => state);
-
-// Handle Window Resize
-// If the window size changes, we need to redraw the canvas so it doesn't look stretched.
-window.addEventListener('resize', () => {
-    if (state.gcode && !document.getElementById('canvasContainer').classList.contains('hidden')) {
-         requestAnimationFrame(() => renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM));
-    }
-});
-
 // --- File Handling Setup ---
 
 // Callback: What to do when a file is processed and ready?
-const onGCodeReady = (newGCode, stepsPerMM = 1.0) => {
+function onGCodeReady(newGCode, stepsPerMM = 1.0) {
     state.gcode = newGCode;
     state.stepsPerMM = stepsPerMM;
     editor.value = newGCode;
@@ -454,7 +443,245 @@ const onGCodeReady = (newGCode, stepsPerMM = 1.0) => {
     if (connection.connected || isSim) {
         btnStart.disabled = false;
     }
+}
+
+// --- Initialization ---
+
+// ── Draw Canvas Editor Setup ─────────────────────────────────────────────────
+// The CanvasEditor needs the same viewport metrics that Viewer computes so that
+// its machine-mm ↔ canvas-px transforms match exactly. We keep a shared live
+// object and update it whenever the draw tab opens.
+const drawViewState = { scale: 1, offsetX: 0, offsetY: 0, bedW: 960, bedH: 770 };
+
+const drawCanvasEl = document.getElementById('drawCanvas');
+const drawContainer = document.getElementById('drawCanvasContainer');
+let canvasEditor = null;
+
+if (drawCanvasEl) {
+    canvasEditor = new CanvasEditor(drawCanvasEl, drawViewState);
+}
+
+// Recompute viewport metrics (mirrors the Viewer math)
+function updateDrawViewMetrics() {
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value)  || 960;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+
+    if (!drawContainer || !drawCanvasEl) return;
+    const rect = drawContainer.getBoundingClientRect();
+    drawCanvasEl.width  = rect.width;
+    drawCanvasEl.height = rect.height;
+
+    const padding = 40;
+    const availW = drawCanvasEl.width  - padding * 2;
+    const availH = drawCanvasEl.height - padding * 2;
+    const scale  = Math.min(availW / bedW, availH / bedH);
+
+    const offsetX = drawCanvasEl.width  / 2 - (bedW / 2) * scale;
+    const offsetY = drawCanvasEl.height / 2 + (bedH / 2) * scale;
+
+    Object.assign(drawViewState, { scale, offsetX, offsetY, bedW, bedH });
+}
+
+// Draw bridge passed to Tabs so it can activate/deactivate editor on tab switch
+const drawBridge = {
+    activate() {
+        updateDrawViewMetrics();
+        if (canvasEditor) {
+            canvasEditor.activate();
+            canvasEditor.draw();
+        }
+    },
+    deactivate() {
+        if (canvasEditor) canvasEditor.deactivate();
+    }
 };
+
+
+// Keyboard shortcuts for tools (only when draw panel is visible)
+window.addEventListener('keydown', e => {
+    if (!document.getElementById('drawPanel') ||
+        document.getElementById('drawPanel').classList.contains('hidden')) return;
+    if (document.activeElement.tagName === 'INPUT' ||
+        document.activeElement.tagName === 'TEXTAREA') return;
+    const map = { 'v': 'select', 'p': 'pencil', 'l': 'line', 'r': 'rect', 'e': 'circle', 'x': 'eraser', 'b': 'bezier' };
+    const tool = map[e.key.toLowerCase()];
+    if (tool) {
+        selectDrawTool(tool);
+    }
+    // Ctrl+Z undo
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && canvasEditor) {
+        if (canvasEditor.shapes.length > 0) {
+            canvasEditor.shapes.pop();
+            canvasEditor.draw();
+        }
+    }
+});
+
+function selectDrawTool(toolName) {
+    if (canvasEditor) canvasEditor.setTool(toolName);
+    document.querySelectorAll('.draw-tool-btn').forEach(b => b.classList.remove('active'));
+    const btn = document.querySelector(`.draw-tool-btn[data-tool="${toolName}"]`);
+    if (btn) btn.classList.add('active');
+}
+
+// Wire all palette tool buttons
+document.querySelectorAll('.draw-tool-btn').forEach(btn => {
+    btn.addEventListener('click', () => selectDrawTool(btn.dataset.tool));
+});
+
+// Stroke width
+const drawStrokeInput = document.getElementById('drawStrokeWidth');
+if (drawStrokeInput) {
+    drawStrokeInput.addEventListener('input', () => {
+        if (canvasEditor) canvasEditor.setStrokeWidth(parseFloat(drawStrokeInput.value) || 1.5);
+    });
+}
+
+// Eraser radius
+const drawEraserInput = document.getElementById('drawEraserRadius');
+if (drawEraserInput) {
+    drawEraserInput.addEventListener('input', () => {
+        if (canvasEditor) canvasEditor.setEraserRadius(parseFloat(drawEraserInput.value) || 5);
+    });
+}
+
+// Clear All
+document.getElementById('btnDrawClear')?.addEventListener('click', () => {
+    if (canvasEditor) {
+        canvasEditor.clearAll();
+        // Re-draw bed background
+        drawBridge.activate();
+    }
+});
+
+// Undo
+document.getElementById('btnDrawUndo')?.addEventListener('click', () => {
+    if (canvasEditor && canvasEditor.shapes.length > 0) {
+        canvasEditor.shapes.pop();
+        canvasEditor.draw();
+    }
+});
+
+// Send to Cutter – export drawn shapes as SVG and push through handleFile
+document.getElementById('btnDrawSend')?.addEventListener('click', () => {
+    if (!canvasEditor || !canvasEditor.hasShapes) {
+        log('No drawn shapes to send.', 'error');
+        return;
+    }
+    const svgText = canvasEditor.exportAsSVG();
+    const virtualFile = new File([svgText], 'canvas_drawing.svg', { type: 'image/svg+xml' });
+    log('Converting drawn shapes to trajectory...', 'info');
+    handleFile(virtualFile, onGCodeReady, window.switchTab);
+});
+
+// Also re-draw bed bg whenever bed size changes
+['bedWidthInput', 'bedHeightInput'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', () => {
+        if (!document.getElementById('drawPanel')?.classList.contains('hidden')) {
+            drawBridge.activate();
+        }
+    });
+});
+
+// Setup the Tab clicking logic (Preview vs Editor vs Draw)
+setupTabs(() => state, drawBridge);
+
+// --- Real-time UrumiCam SVG Push Listener ---
+function setupUrumiCamPushListener() {
+    const serverUrl = "http://localhost:5000";
+    
+    // Dynamic Socket.IO client library loader
+    function loadSocketIO() {
+        return new Promise((resolve) => {
+            if (window.io) return resolve(window.io);
+            const script = document.createElement('script');
+            script.src = `${serverUrl}/socket.io/socket.io.js`;
+            script.onload = () => resolve(window.io);
+            script.onerror = () => {
+                // Fallback CDN
+                const fallback = document.createElement('script');
+                fallback.src = "https://cdn.socket.io/4.7.2/socket.io.min.js";
+                fallback.onload = () => resolve(window.io);
+                fallback.onerror = () => console.log("[UrumiCam Bridge] Socket.IO failed to load.");
+                document.head.appendChild(fallback);
+            };
+            document.head.appendChild(script);
+        });
+    }
+    
+    loadSocketIO().then((io) => {
+        if (!io) return;
+        const socket = io(serverUrl, { reconnection: true });
+        
+        socket.on('connect', () => {
+            console.log("[UrumiCam Bridge] Connected to UrumiCam background listener.");
+        });
+        
+        socket.on('import_svg_in_cutter', async (data) => {
+            log("[UrumiCam Bridge] Received real-time SVG push from UrumiCam!", "success");
+            
+            try {
+                if (data && data.error) {
+                    throw new Error(data.error);
+                }
+                
+                let svgText = data ? data.svg_text : null;
+                
+                // Fallback if svg_text is not provided inline (e.g. server hasn't been restarted yet)
+                if (!svgText) {
+                    log("SVG not sent inline. Falling back to HTTP fetch...", "info");
+                    const svgUrl = `${serverUrl}/uploads/rectified_edges.svg?t=${Date.now()}`;
+                    const res = await fetch(svgUrl);
+                    if (!res.ok) throw new Error("SVG vector payload missing and fallback fetch failed.");
+                    svgText = await res.text();
+                }
+                
+                const virtualFile = new File([svgText], "rectified_edges.svg", { type: "image/svg+xml" });
+                
+                let urumiMeta = null;
+                if (data && data.dots_per_mm) {
+                    urumiMeta = {
+                        dots_per_mm: data.dots_per_mm,
+                        physical_width: data.physical_width,
+                        physical_height: data.physical_height
+                    };
+                } else {
+                    try {
+                        const metaRes = await fetch(`${serverUrl}/uploads/metadata.json?t=${Date.now()}`);
+                        if (metaRes.ok) {
+                            const meta = await metaRes.json();
+                            urumiMeta = {
+                                dots_per_mm: meta.dots_per_mm,
+                                physical_width: meta.physical_width,
+                                physical_height: meta.physical_height
+                            };
+                        }
+                    } catch (err) {
+                        // Fallback gracefully to default scaling if metadata is unavailable
+                    }
+                }
+
+                log("Importing boundary into SvgConverter...", "info");
+                handleFile(virtualFile, onGCodeReady, window.switchTab, urumiMeta);
+                
+                // Switch active tab to GCode Preview (Trajectory Preview)
+                if (window.switchTab) {
+                    window.switchTab('gcode-preview');
+                }
+                log("Workpiece vectors imported successfully from UrumiCam!", "success");
+            } catch (e) {
+                log(`Workpiece Import Failed: ${e.message}`, "error");
+            }
+        });
+    });
+}
+
+try {
+    setupUrumiCamPushListener();
+} catch (e) {
+    console.error("Failed to setup UrumiCam push listener:", e);
+}
+
 
 // Handle "Open File" button
 document.getElementById('fileInput').addEventListener('change', (e) => {

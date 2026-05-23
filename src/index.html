@@ -1,336 +1,460 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cutter (WiFi)</title>
+    <title>UrumiCutter</title>
     <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
 
-<header>
-    <h1>Cutter (WiFi)</h1>
-    <div style="display: flex; align-items: center; gap: 1rem;">
-        <span id="userCount" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;"></span>
-        <!-- Premium slide toggle switch for simulation mode -->
-        <label class="sim-switch-container" title="Toggle simulation mode">
-            <span class="sim-switch-label">Simulation</span>
-            <input type="checkbox" id="simModeCheckbox" style="display: none;">
-            <div class="sim-switch-outer">
-                <div class="sim-switch-inner"></div>
-            </div>
-        </label>
-        <div class="status-badge" id="statusBadge">
-            <span class="status-dot"></span>
-            <span id="statusText">Disconnected</span>
-        </div>
-    </div>
-</header>
-
-<main>
-    <!-- Left: Console -->
-    <section class="console-panel">
-        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-            <span>G-Code Command</span>
-            <button id="btnClear" class="btn btn-action" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Clear</button>
-        </div>
-        <div class="quick-actions" style="display: flex; gap: 0.5rem; padding: 0.5rem; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); align-items: center; flex-wrap: wrap;">
-            <button id="btnToggleMotors" class="btn btn-action" style="font-size: 0.75rem;" data-enabled="false">Enable Motors</button>
-            <button id="btnPingAll" class="btn btn-action" style="font-size: 0.75rem;">Ping All</button>
-            <div style="display: flex; align-items: center; gap: 0.25rem;">
-                <input type="number" id="pingNodeId" placeholder="ID" style="width: 50px; padding: 0.2rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: rgba(15, 23, 42, 0.5); color: white; outline: none;">
-                <button id="btnPingNode" class="btn btn-action" style="font-size: 0.75rem;">Ping</button>
+    <header>
+        <h1>UrumiCutter</h1>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <span id="userCount" style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;"></span>
+            <!-- Premium slide toggle switch for simulation mode -->
+            <label class="sim-switch-container" title="Toggle simulation mode">
+                <span class="sim-switch-label">Simulation</span>
+                <input type="checkbox" id="simModeCheckbox" style="display: none;">
+                <div class="sim-switch-outer">
+                    <div class="sim-switch-inner"></div>
+                </div>
+            </label>
+            <div class="status-badge" id="statusBadge">
+                <span class="status-dot"></span>
+                <span id="statusText">Disconnected</span>
             </div>
         </div>
-        <div class="console-output" id="consoleOutput">
-            <div class="console-line log-info">System initialized...</div>
-            <div class="console-line log-info">Click 'Connect Serial' to connect to Pico.</div>
-        </div>
-        <div class="console-input-area">
-            <span class="console-prefix">&gt;</span>
-            <input type="text" id="cmdInput" placeholder="Type command..." autocomplete="off">
-            <button class="btn btn-primary" id="btnRun">Run</button>
-        </div>
-    </section>
+    </header>
 
-    <!-- Right: Workspace -->
-    <section class="workspace-panel">
-        <div class="toolbar">
-            <div class="tabs">
-                <div class="tab active" onclick="switchTab('gcode-preview')">Trajectory Preview</div>
-                <div class="tab" onclick="switchTab('svg-preview')">SVG Preview</div>
-                <div class="tab" onclick="switchTab('editor')">Data Editor</div>
+    <main>
+        <!-- Left: Console -->
+        <section class="console-panel">
+            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Console Log</span>
+                <button id="btnClear" class="btn btn-action"
+                    style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Clear</button>
             </div>
-            <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
-                <button class="btn btn-action" id="btnSettings" title="Machine Configuration">⚙️ Settings</button>
-                <button class="btn btn-action" id="btnJog" title="Jog Machine">🕹️ Jog</button>
-                <input type="file" id="fileInput" accept=".txt,.csv,.gcode,.svg" style="display: none;">
-                <button class="btn btn-action" id="btnConnect">Connect Serial</button>
-                <button class="btn btn-action" onclick="document.getElementById('fileInput').click()">Load File</button>
-                <button class="btn btn-start" id="btnStart" disabled>Start</button>
-            </div>
-        </div>
-
-        <div class="content-area" id="dropZone">
-            <!-- G-Code Preview Tab -->
-            <div id="gcodePreview" class="view-panel">
-                <div id="emptyState" class="empty-state" onclick="document.getElementById('fileInput').click()">
-                    <div class="empty-icon">📂</div>
-                    <div class="empty-text">Drag & Drop Files Here</div>
-                    <div class="empty-subtext">Supports .txt, .csv, .svg</div>
-                </div>
-                <div id="canvasContainer" class="hidden" style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; overflow:hidden;">
-                    <canvas id="gcodeCanvas"></canvas>
+            <div class="quick-actions"
+                style="display: flex; gap: 0.5rem; padding: 0.5rem; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); align-items: center; flex-wrap: wrap;">
+                <button id="btnToggleMotors" class="btn btn-action" style="font-size: 0.75rem;"
+                    data-enabled="false">Enable Motors</button>
+                <button id="btnPingAll" class="btn btn-action" style="font-size: 0.75rem;">Ping All</button>
+                <div style="display: flex; align-items: center; gap: 0.25rem;">
+                    <input type="number" id="pingNodeId" placeholder="ID"
+                        style="width: 50px; padding: 0.2rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: rgba(15, 23, 42, 0.5); color: white; outline: none;">
+                    <button id="btnPingNode" class="btn btn-action" style="font-size: 0.75rem;">Ping</button>
                 </div>
             </div>
-
-            <!-- SVG Preview Tab -->
-            <div id="svgPreview" class="view-panel hidden">
-                 <!-- Re-using empty state logic if empty, otherwise populated -->
-                 <div class="empty-state" onclick="document.getElementById('fileInput').click()">
-                    <div class="empty-icon">🖼️</div>
-                    <div class="empty-text">No SVG Loaded</div>
-                </div>
+            <div class="console-output" id="consoleOutput">
+                <div class="console-line log-info">System initialized...</div>
+                <div class="console-line log-info">Click 'Connect Serial' to connect to Pico.</div>
             </div>
+            <div class="console-input-area">
+                <span class="console-prefix">&gt;</span>
+                <input type="text" id="cmdInput" placeholder="Type command..." autocomplete="off">
+                <button class="btn btn-primary" id="btnRun">Run</button>
+            </div>
+        </section>
 
-            <!-- Editor Tab -->
-            <textarea id="gcodeEditor" class="view-panel hidden" spellcheck="false" placeholder="Trajectory Data will appear here..."></textarea>
-        </div>
-    </section>
-</main>
-
-<!-- Jog Control Modal -->
-<div id="jogModal" class="modal-overlay hidden">
-    <div class="modal-content glass-panel jog-panel">
-        <div class="modal-header">
-            <h2>🕹️ Jog Control</h2>
-            <button id="btnCloseJog" class="btn-icon">&times;</button>
-        </div>
-        <div class="modal-body">
-            <!-- Step Size -->
-            <div class="jog-step-row">
-                <span class="jog-section-label">Step Size</span>
-                <div class="jog-step-btns">
-                    <button class="jog-step-btn active" data-step="0.1">0.1 mm</button>
-                    <button class="jog-step-btn" data-step="1">1 mm</button>
-                    <button class="jog-step-btn" data-step="5">5 mm</button>
-                    <button class="jog-step-btn" data-step="10">10 mm</button>
+        <!-- Right: Workspace -->
+        <section class="workspace-panel">
+            <div class="toolbar">
+                <div class="tabs">
+                    <div class="tab active" onclick="switchTab('gcode-preview')">Trajectory Preview</div>
+                    <div class="tab" onclick="switchTab('svg-preview')">SVG Preview</div>
+                    <div class="tab" onclick="switchTab('editor')">Data Editor</div>
+                    <div class="tab" onclick="switchTab('draw')">Draw</div>
+                    <a href="http://localhost:5000" target="_blank" class="tab"
+                        style="text-decoration: none;">UrumiCam</a>
+                </div>
+                <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button class="btn btn-action" id="btnSettings" title="Machine Configuration">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" class="btn-icon-svg">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path
+                                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z">
+                            </path>
+                        </svg>
+                        Settings
+                    </button>
+                    <button class="btn btn-action" id="btnJog" title="Jog Machine">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" class="btn-icon-svg">
+                            <path d="M21 20H3a1 1 0 0 1-1-1v-2a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v2a1 1 0 0 1-1 1z"></path>
+                            <path d="M12 14V6"></path>
+                            <circle cx="12" cy="4" r="2" fill="currentColor"></circle>
+                        </svg>
+                        Jog
+                    </button>
+                    <input type="file" id="fileInput" accept=".txt,.csv,.gcode,.svg" style="display: none;">
+                    <button class="btn btn-action" id="btnConnect">Connect Serial</button>
+                    <button class="btn btn-action" onclick="document.getElementById('fileInput').click()">Load
+                        File</button>
+                    <button class="btn btn-start" id="btnStart" disabled>Start</button>
                 </div>
             </div>
 
-            <!-- XY D-Pad + Z controls side by side -->
-            <div class="jog-controls-row">
-                <!-- D-Pad -->
-                <div class="jog-dpad-section">
-                    <span class="jog-section-label">X / Y Axis</span>
-                    <div class="jog-dpad">
-                        <div></div>
-                        <button class="jog-btn" id="jogYPlus"  title="Y+">▲<span>Y+</span></button>
-                        <div></div>
-                        <button class="jog-btn" id="jogXMinus" title="X-">◀<span>X−</span></button>
-                        <button class="jog-btn jog-home-btn" id="jogHome" title="Go to Zero">⌂</button>
-                        <button class="jog-btn" id="jogXPlus"  title="X+">▶<span>X+</span></button>
-                        <div></div>
-                        <button class="jog-btn" id="jogYMinus" title="Y-">▼<span>Y−</span></button>
-                        <div></div>
+            <!-- Draw Tool Palette (visible only when Draw tab is active) -->
+            <div id="drawPalette" class="draw-palette hidden">
+                <div class="draw-palette-tools">
+                    <button class="draw-tool-btn active" id="dtSelect" data-tool="select" title="Select / Move (V)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M5 3l14 9-7 1-4 7z"/>
+                        </svg>
+                        Select
+                    </button>
+                    <button class="draw-tool-btn" id="dtPencil" data-tool="pencil" title="Freehand Pencil (P)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 20h9"/>
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                        </svg>
+                        Pencil
+                    </button>
+                    <button class="draw-tool-btn" id="dtLine" data-tool="line" title="Line (L)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="5" y1="19" x2="19" y2="5"/>
+                        </svg>
+                        Line
+                    </button>
+                    <button class="draw-tool-btn" id="dtRect" data-tool="rect" title="Rectangle (R)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        </svg>
+                        Rectangle
+                    </button>
+                    <button class="draw-tool-btn" id="dtCircle" data-tool="circle" title="Ellipse (E)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <ellipse cx="12" cy="12" rx="10" ry="6"/>
+                        </svg>
+                        Ellipse
+                    </button>
+                    <button class="draw-tool-btn" id="dtEraser" data-tool="eraser" title="Eraser (X)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 20H7L3 16l10-10 7 7-3.5 3.5"/>
+                            <path d="M6.5 17.5l4-4"/>
+                        </svg>
+                        Eraser
+                    </button>
+                    <button class="draw-tool-btn" id="dtBezier" data-tool="bezier" title="Bezier Curve (B)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 17 C 6 3, 18 3, 21 17" />
+                            <circle cx="3" cy="17" r="1.5" fill="currentColor"/>
+                            <circle cx="21" cy="17" r="1.5" fill="currentColor"/>
+                            <circle cx="6" cy="3" r="1.5" fill="currentColor" stroke-dasharray="2 2"/>
+                            <circle cx="18" cy="3" r="1.5" fill="currentColor" stroke-dasharray="2 2"/>
+                        </svg>
+                        Bezier
+                    </button>
+                </div>
+                <div class="draw-palette-options">
+                    <div class="draw-option-group">
+                        <label>Stroke (mm)</label>
+                        <input type="number" id="drawStrokeWidth" value="1.5" min="0.1" max="20" step="0.1"
+                            style="width:60px;">
                     </div>
-                </div>
-
-                <!-- Z Axis -->
-                <div class="jog-z-section">
-                    <span class="jog-section-label">Z Axis</span>
-                    <div class="jog-z-col">
-                        <button class="jog-btn jog-z-btn" id="jogZPlus"  title="Z Up">▲<span>Z+</span></button>
-                        <div class="jog-z-label">Z</div>
-                        <button class="jog-btn jog-z-btn" id="jogZMinus" title="Z Down">▼<span>Z−</span></button>
+                    <div class="draw-option-group">
+                        <label>Eraser (mm)</label>
+                        <input type="number" id="drawEraserRadius" value="5" min="1" max="50" step="1"
+                            style="width:60px;">
                     </div>
-                </div>
-
-                <!-- Rotary Axis -->
-                <div class="jog-a-section">
-                    <span class="jog-section-label">Rotary (A)</span>
-                    <div class="jog-a-col">
-                        <button class="jog-btn jog-a-btn" id="jogAPlus"  title="Rotate CW">↻<span>A+</span></button>
-                        <div class="jog-a-label">A</div>
-                        <button class="jog-btn jog-a-btn" id="jogAMinus" title="Rotate CCW">↺<span>A−</span></button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Position Display -->
-            <div class="jog-position-bar">
-                <span class="jog-pos-label">Position</span>
-                <span class="jog-pos-item">X: <span id="jogPosX">0.00</span></span>
-                <span class="jog-pos-item">Y: <span id="jogPosY">0.00</span></span>
-                <span class="jog-pos-item">Z: <span id="jogPosZ">0.00</span></span>
-                <span class="jog-pos-item">A: <span id="jogPosA">0.00</span></span>
-                <button class="jog-reset-pos-btn" id="jogResetPos" title="Reset displayed position to zero">Reset</button>
-            </div>
-
-            <p class="help-text" style="text-align:center;">Keyboard: Arrow keys → X/Y &nbsp;|&nbsp; PgUp/PgDn → Z &nbsp;|&nbsp; [ / ] → Rotary &nbsp;|&nbsp; Home → Go to Zero</p>
-        </div>
-    </div>
-</div>
-
-<!-- Configuration Modal -->
-<div id="configModal" class="modal-overlay hidden">
-    <div class="modal-content glass-panel">
-        <div class="modal-header">
-            <h2>Machine Configuration</h2>
-            <button id="btnCloseModal" class="btn-icon">&times;</button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label for="segmentLengthInput">Segment Length (mm):</label>
-                <div class="slider-input-group">
-                    <input type="range" id="segmentLengthSlider" value="1.0" step="0.1" min="0.1" max="10.0">
-                    <input type="number" id="segmentLengthInput" value="1.0" step="0.1" min="0.1" max="10.0">
-                </div>
-                <span class="help-text">Subdivision length for trajectory paths. Smaller is smoother but larger file.</span>
-            </div>
-            <div class="form-group">
-                <label for="cuttingSpeedInput">Cutting Speed (mm/sec):</label>
-                <div class="slider-input-group">
-                    <input type="range" id="cuttingSpeedSlider" value="30" step="1" min="1" max="200">
-                    <input type="number" id="cuttingSpeedInput" value="30" step="1" min="1" max="200">
-                </div>
-                <span class="help-text">Target speed for cutting moves (normalized velocity).</span>
-            </div>
-            
-            <div class="form-group">
-                <label for="maxStepsInput">Max Steps (Per Command):</label>
-                <div class="slider-input-group">
-                    <input type="range" id="maxStepsSlider" value="30000" step="1000" min="1000" max="65535">
-                    <input type="number" id="maxStepsInput" value="30000" step="1" min="1000" max="65535">
-                </div>
-                <span class="help-text">Limit relative steps in a single move. Moves exceeding this will be divided.</span>
-            </div>
-
-            <div class="form-group">
-                <label for="maxSpeedInput">Max Speed (SPS):</label>
-                <div class="slider-input-group">
-                    <input type="range" id="maxSpeedSlider" value="30000" step="1000" min="1000" max="65535">
-                    <input type="number" id="maxSpeedInput" value="30000" step="1" min="1000" max="65535">
-                </div>
-                <span class="help-text">Limit Steps-Per-Second. Feedrates are scaled down to ensure synchronization if exceeded.</span>
-            </div>
-            <hr class="modal-divider">
-
-            <div class="axis-group">
-                <div class="axis-group-label">Physical Dimensions</div>
-                <div class="axis-row" style="grid-template-columns: repeat(4, 1fr);">
-                    <div class="axis-cell">
-                        <input type="number" id="bedWidthInput" value="960" step="10" min="100">
-                        <span>Bed Width (mm)</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="bedHeightInput" value="770" step="10" min="100">
-                        <span>Bed Height (mm)</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="gantryWidthInput" value="210" step="10" min="10">
-                        <span>Gantry Width (mm)</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="gantryHeightInput" value="180" step="10" min="10">
-                        <span>Gantry Height (mm)</span>
-                    </div>
-                </div>
-            </div>
-            <hr class="modal-divider">
-
-            <div class="axis-group">
-                <div class="axis-group-label">X-Axis &nbsp;<span class="axis-calc" id="xStepsLabel"></span></div>
-                <div class="axis-row">
-                    <div class="axis-cell">
-                        <input type="number" id="xRs485Id" value="3" step="1" min="1" max="255">
-                        <span>RS485 ID</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="xMotorSteps" value="200" step="1" min="1">
-                        <span>Steps/Rev</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="xMicrosteps" value="32" step="1" min="1">
-                        <span>Microsteps</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="xMmPerRev" value="40" step="1" min="1">
-                        <span>MM/Rev</span>
+                    <div class="draw-palette-actions">
+                        <button class="btn btn-action" id="btnDrawClear" title="Clear all drawn shapes">Clear All</button>
+                        <button class="btn btn-action" id="btnDrawUndo" title="Undo last shape (Ctrl+Z)">Undo</button>
+                        <button class="btn btn-start" id="btnDrawSend" title="Convert drawn shapes to trajectory">Send to Cutter</button>
                     </div>
                 </div>
             </div>
 
-            <div class="axis-group">
-                <div class="axis-group-label">Y-Axis &nbsp;<span class="axis-calc" id="yStepsLabel"></span></div>
-                <div class="axis-row">
-                    <div class="axis-cell">
-                        <input type="number" id="yRs485Id" value="2" step="1" min="1" max="255">
-                        <span>RS485 ID</span>
+            <div class="content-area" id="dropZone">
+                <!-- G-Code Preview Tab -->
+                <div id="gcodePreview" class="view-panel">
+                    <div id="emptyState" class="empty-state" onclick="document.getElementById('fileInput').click()">
+                        <div class="empty-icon">📂</div>
+                        <div class="empty-text">Drag & Drop Files Here</div>
+                        <div class="empty-subtext">Supports .txt, .csv, .svg</div>
                     </div>
-                    <div class="axis-cell">
-                        <input type="number" id="yMotorSteps" value="200" step="1" min="1">
-                        <span>Steps/Rev</span>
+                    <div id="canvasContainer" class="hidden"
+                        style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; overflow:hidden;">
+                        <canvas id="gcodeCanvas"></canvas>
                     </div>
-                    <div class="axis-cell">
-                        <input type="number" id="yMicrosteps" value="32" step="1" min="1">
-                        <span>Microsteps</span>
+                </div>
+
+                <!-- SVG Preview Tab -->
+                <div id="svgPreview" class="view-panel hidden">
+                    <div class="empty-state" onclick="document.getElementById('fileInput').click()">
+                        <div class="empty-icon">🖼️</div>
+                        <div class="empty-text">No SVG Loaded</div>
                     </div>
-                    <div class="axis-cell">
-                        <input type="number" id="yMmPerRev" value="40" step="1" min="1">
-                        <span>MM/Rev</span>
+                </div>
+
+                <!-- Editor Tab -->
+                <textarea id="gcodeEditor" class="view-panel hidden" spellcheck="false"
+                    placeholder="Trajectory Data will appear here..."></textarea>
+
+                <!-- Draw Tab -->
+                <div id="drawPanel" class="view-panel hidden">
+                    <div id="drawCanvasContainer"
+                        style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; overflow:hidden; position:relative;">
+                        <canvas id="drawCanvas" style="display:block;"></canvas>
                     </div>
                 </div>
             </div>
+        </section>
+    </main>
 
-            <div class="axis-group">
-                <div class="axis-group-label">Z-Axis &nbsp;<span class="axis-calc" id="zStepsLabel"></span></div>
-                <div class="axis-row">
-                    <div class="axis-cell">
-                        <input type="number" id="zRs485Id" value="1" step="1" min="1" max="255">
-                        <span>RS485 ID</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="zMotorSteps" value="200" step="1" min="1">
-                        <span>Steps/Rev</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="zMicrosteps" value="32" step="1" min="1">
-                        <span>Microsteps</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="zMmPerRev" value="8" step="0.1" min="0.01">
-                        <span>MM/Rev</span>
-                    </div>
-                </div>
+    <!-- Jog Control Modal -->
+    <div id="jogModal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel jog-panel">
+            <div class="modal-header">
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round"
+                        style="width: 20px; height: 20px; display: inline-block; vertical-align: middle; margin-right: 8px; color: #60a5fa;">
+                        <path d="M21 20H3a1 1 0 0 1-1-1v-2a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v2a1 1 0 0 1-1 1z"></path>
+                        <path d="M12 14V6"></path>
+                        <circle cx="12" cy="4" r="2" fill="currentColor"></circle>
+                    </svg>
+                    Jog Control
+                </h2>
+                <button id="btnCloseJog" class="btn-icon">&times;</button>
             </div>
-
-            <div class="axis-group">
-                <div class="axis-group-label">Rotary (A) &nbsp;<span class="axis-calc" id="aStepsLabel"></span></div>
-                <div class="axis-row">
-                    <div class="axis-cell">
-                        <input type="number" id="aRs485Id" value="4" step="1" min="1" max="255">
-                        <span>RS485 ID</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="aMotorSteps" value="200" step="1" min="1">
-                        <span>Steps/Rev</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="aMicrosteps" value="16" step="1" min="1">
-                        <span>Microsteps</span>
-                    </div>
-                    <div class="axis-cell">
-                        <input type="number" id="aDegPerRev" value="360" step="1" min="1">
-                        <span>Deg/Rev</span>
+            <div class="modal-body">
+                <!-- Step Size -->
+                <div class="jog-step-row">
+                    <span class="jog-section-label">Step Size</span>
+                    <div class="jog-step-btns">
+                        <button class="jog-step-btn active" data-step="0.1">0.1 mm</button>
+                        <button class="jog-step-btn" data-step="1">1 mm</button>
+                        <button class="jog-step-btn" data-step="5">5 mm</button>
+                        <button class="jog-step-btn" data-step="10">10 mm</button>
                     </div>
                 </div>
+
+                <!-- XY D-Pad + Z controls side by side -->
+                <div class="jog-controls-row">
+                    <!-- D-Pad -->
+                    <div class="jog-dpad-section">
+                        <span class="jog-section-label">X / Y Axis</span>
+                        <div class="jog-dpad">
+                            <div></div>
+                            <button class="jog-btn" id="jogYPlus" title="Y+">▲<span>Y+</span></button>
+                            <div></div>
+                            <button class="jog-btn" id="jogXMinus" title="X-">◀<span>X−</span></button>
+                            <button class="jog-btn jog-home-btn" id="jogHome" title="Go to Zero">⌂</button>
+                            <button class="jog-btn" id="jogXPlus" title="X+">▶<span>X+</span></button>
+                            <div></div>
+                            <button class="jog-btn" id="jogYMinus" title="Y-">▼<span>Y−</span></button>
+                            <div></div>
+                        </div>
+                    </div>
+
+                    <!-- Z Axis -->
+                    <div class="jog-z-section">
+                        <span class="jog-section-label">Z Axis</span>
+                        <div class="jog-z-col">
+                            <button class="jog-btn jog-z-btn" id="jogZPlus" title="Z Up">▲<span>Z+</span></button>
+                            <div class="jog-z-label">Z</div>
+                            <button class="jog-btn jog-z-btn" id="jogZMinus" title="Z Down">▼<span>Z−</span></button>
+                        </div>
+                    </div>
+
+                    <!-- Rotary Axis -->
+                    <div class="jog-a-section">
+                        <span class="jog-section-label">Rotary (A)</span>
+                        <div class="jog-a-col">
+                            <button class="jog-btn jog-a-btn" id="jogAPlus" title="Rotate CW">↻<span>A+</span></button>
+                            <div class="jog-a-label">A</div>
+                            <button class="jog-btn jog-a-btn" id="jogAMinus"
+                                title="Rotate CCW">↺<span>A−</span></button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Position Display -->
+                <div class="jog-position-bar">
+                    <span class="jog-pos-label">Position</span>
+                    <span class="jog-pos-item">X: <span id="jogPosX">0.00</span></span>
+                    <span class="jog-pos-item">Y: <span id="jogPosY">0.00</span></span>
+                    <span class="jog-pos-item">Z: <span id="jogPosZ">0.00</span></span>
+                    <span class="jog-pos-item">A: <span id="jogPosA">0.00</span></span>
+                    <button class="jog-reset-pos-btn" id="jogResetPos"
+                        title="Reset displayed position to zero">Reset</button>
+                </div>
+
+                <p class="help-text" style="text-align:center;">Keyboard: Arrow keys → X/Y &nbsp;|&nbsp; PgUp/PgDn → Z
+                    &nbsp;|&nbsp; [ / ] → Rotary &nbsp;|&nbsp; Home → Go to Zero</p>
             </div>
         </div>
     </div>
-</div>
 
-<script type="module" src="script.js"></script>
+    <!-- Configuration Modal -->
+    <div id="configModal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h2>Machine Configuration</h2>
+                <button id="btnCloseModal" class="btn-icon">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="segmentLengthInput">Segment Length (mm):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="segmentLengthSlider" value="1.0" step="0.1" min="0.1" max="10.0">
+                        <input type="number" id="segmentLengthInput" value="1.0" step="0.1" min="0.1" max="10.0">
+                    </div>
+                    <span class="help-text">Subdivision length for trajectory paths. Smaller is smoother but larger
+                        file.</span>
+                </div>
+                <div class="form-group">
+                    <label for="cuttingSpeedInput">Cutting Speed (mm/sec):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="cuttingSpeedSlider" value="30" step="1" min="1" max="200">
+                        <input type="number" id="cuttingSpeedInput" value="30" step="1" min="1" max="200">
+                    </div>
+                    <span class="help-text">Target speed for cutting moves (normalized velocity).</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="maxStepsInput">Max Steps (Per Command):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="maxStepsSlider" value="30000" step="1000" min="1000" max="65535">
+                        <input type="number" id="maxStepsInput" value="30000" step="1" min="1000" max="65535">
+                    </div>
+                    <span class="help-text">Limit relative steps in a single move. Moves exceeding this will be
+                        divided.</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="maxSpeedInput">Max Speed (SPS):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="maxSpeedSlider" value="30000" step="1000" min="1000" max="65535">
+                        <input type="number" id="maxSpeedInput" value="30000" step="1" min="1000" max="65535">
+                    </div>
+                    <span class="help-text">Limit Steps-Per-Second. Feedrates are scaled down to ensure synchronization
+                        if exceeded.</span>
+                </div>
+                <hr class="modal-divider">
+
+                <div class="axis-group">
+                    <div class="axis-group-label">Physical Dimensions</div>
+                    <div class="axis-row" style="grid-template-columns: repeat(4, 1fr);">
+                        <div class="axis-cell">
+                            <input type="number" id="bedWidthInput" value="960" step="10" min="100">
+                            <span>Bed Width (mm)</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="bedHeightInput" value="770" step="10" min="100">
+                            <span>Bed Height (mm)</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="gantryWidthInput" value="210" step="10" min="10">
+                            <span>Gantry Width (mm)</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="gantryHeightInput" value="180" step="10" min="10">
+                            <span>Gantry Height (mm)</span>
+                        </div>
+                    </div>
+                </div>
+                <hr class="modal-divider">
+
+                <div class="axis-group">
+                    <div class="axis-group-label">X-Axis &nbsp;<span class="axis-calc" id="xStepsLabel"></span></div>
+                    <div class="axis-row">
+                        <div class="axis-cell">
+                            <input type="number" id="xRs485Id" value="3" step="1" min="1" max="255">
+                            <span>RS485 ID</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="xMotorSteps" value="200" step="1" min="1">
+                            <span>Steps/Rev</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="xMicrosteps" value="32" step="1" min="1">
+                            <span>Microsteps</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="xMmPerRev" value="40" step="1" min="1">
+                            <span>MM/Rev</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="axis-group">
+                    <div class="axis-group-label">Y-Axis &nbsp;<span class="axis-calc" id="yStepsLabel"></span></div>
+                    <div class="axis-row">
+                        <div class="axis-cell">
+                            <input type="number" id="yRs485Id" value="2" step="1" min="1" max="255">
+                            <span>RS485 ID</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="yMotorSteps" value="200" step="1" min="1">
+                            <span>Steps/Rev</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="yMicrosteps" value="32" step="1" min="1">
+                            <span>Microsteps</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="yMmPerRev" value="40" step="1" min="1">
+                            <span>MM/Rev</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="axis-group">
+                    <div class="axis-group-label">Z-Axis &nbsp;<span class="axis-calc" id="zStepsLabel"></span></div>
+                    <div class="axis-row">
+                        <div class="axis-cell">
+                            <input type="number" id="zRs485Id" value="1" step="1" min="1" max="255">
+                            <span>RS485 ID</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="zMotorSteps" value="200" step="1" min="1">
+                            <span>Steps/Rev</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="zMicrosteps" value="32" step="1" min="1">
+                            <span>Microsteps</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="zMmPerRev" value="8" step="0.1" min="0.01">
+                            <span>MM/Rev</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="axis-group">
+                    <div class="axis-group-label">Rotary (A) &nbsp;<span class="axis-calc" id="aStepsLabel"></span>
+                    </div>
+                    <div class="axis-row">
+                        <div class="axis-cell">
+                            <input type="number" id="aRs485Id" value="4" step="1" min="1" max="255">
+                            <span>RS485 ID</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="aMotorSteps" value="200" step="1" min="1">
+                            <span>Steps/Rev</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="aMicrosteps" value="16" step="1" min="1">
+                            <span>Microsteps</span>
+                        </div>
+                        <div class="axis-cell">
+                            <input type="number" id="aDegPerRev" value="360" step="1" min="1">
+                            <span>Deg/Rev</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="script.js"></script>
 
 </body>
+
 </html>

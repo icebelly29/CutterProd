@@ -261,7 +261,7 @@ class SvgConverter {
             const h = svgRoot.getAttribute('height');
             
             if (vb) {
-                const parts = vb.split(/[\S,]+/).map(parseFloat);
+                const parts = vb.split(/[\s,]+/).map(parseFloat);
                 if (parts.length === 4) {
                     pageW = parts[2];
                     pageH = parts[3];
@@ -274,6 +274,14 @@ class SvgConverter {
 
         const elements = doc.querySelectorAll('path, rect, circle, ellipse, line, polyline, polygon');
         
+        const state = {
+            isPenDown: false,
+            machineX: 0,
+            machineY: 0,
+            machineZ: this.zUp,
+            machineA: 0
+        };
+
         elements.forEach((el, index) => {
             if (el.closest('defs, clipPath, mask, symbol, marker, pattern')) return;
 
@@ -331,17 +339,24 @@ class SvgConverter {
                 });
             }
 
-            const shapeData = this.generateTrajectory(commands);
+            const shapeData = this.generateTrajectory(commands, state);
             data.push(...shapeData);
         });
         
     } else {
+        const state = {
+            isPenDown: false,
+            machineX: 0,
+            machineY: 0,
+            machineZ: this.zUp,
+            machineA: 0
+        };
         const pathRegex = /<path[^>]*\bd=[\"']([^\"']+)["']/gi;
         let match;
         while ((match = pathRegex.exec(svgContent)) !== null) {
           const d = match[1];
           const commands = this.parsePathData(d);
-          const shapeData = this.generateTrajectory(commands);
+          const shapeData = this.generateTrajectory(commands, state);
           data.push(...shapeData);
         }
     }
@@ -464,20 +479,22 @@ class SvgConverter {
    * @param {Array} commands - List of parsed commands.
    * @returns {Array} Array of CSV data lines.
    */
-  generateTrajectory(commands) {
+  generateTrajectory(commands, state = null) {
     const data = [];
     let cur = new Vector2(0, 0);
     let start = new Vector2(0, 0); 
     let lastControl = new Vector2(0, 0);
     let lastCmdType = '';
 
-    const state = {
-        isPenDown: false,
-        machineX: 0,
-        machineY: 0,
-        machineZ: this.zUp,
-        machineA: 0
-    };
+    if (!state) {
+        state = {
+            isPenDown: false,
+            machineX: 0,
+            machineY: 0,
+            machineZ: this.zUp,
+            machineA: 0
+        };
+    }
 
     commands.forEach(cmd => {
         const isRelative = (cmd.type === cmd.type.toLowerCase());

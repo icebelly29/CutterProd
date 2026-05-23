@@ -57,7 +57,7 @@ import { log } from './Console.js';
  * @param {Function} onGCodeReady - Callback to save the new GCode.
  * @param {Function} onSwitchTab - Callback to change the view.
  */
-export async function handleFile(file, onGCodeReady, onSwitchTab) {
+export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = null) {
     if (!file) return;
     log(`Loading ${file.name}...`, 'info');
     
@@ -122,53 +122,59 @@ export async function handleFile(file, onGCodeReady, onSwitchTab) {
                 if (h_mm === 0 && viewbox.length === 4) h_mm = viewbox[3];
             }
 
-            // --- SCALING LOGIC ---
-            
-            // 1. Base Dimensions from ViewBox or Attributes
+            // --- SCALING & MAPPING LOGIC ---
+            let scale = 1.0;
+            let finalOffsetX = 0;
+            let finalOffsetY = 0;
+            let finalW = 0;
+            let finalH = 0;
+
             let vbW = viewbox.length === 4 ? viewbox[2] : w_mm;
             let vbH = viewbox.length === 4 ? viewbox[3] : h_mm;
-            
             if (vbW === 0) vbW = w_mm;
             if (vbH === 0) vbH = h_mm;
 
-            // 2. Calculate initial scale (Unit Conversion)
-            // e.g., if ViewBox is 100 wide but Width is 100mm, scale is 1.
-            let scale = (vbW > 0) ? (w_mm / vbW) : 1.0;
+            if (urumiMeta) {
+                // Direct physical mapping from UrumiCam bed scanner
+                scale = 1.0 / urumiMeta.dots_per_mm;
+                finalOffsetX = 0;
+                
+                const vbMinY = viewbox.length === 4 ? viewbox[1] : 0;
+                finalOffsetY = urumiMeta.physical_height + (vbMinY * scale);
+                
+                finalW = urumiMeta.physical_width;
+                finalH = urumiMeta.physical_height;
+                log(`Direct visual alignment loaded: ${finalW.toFixed(1)}x${finalH.toFixed(1)}mm gantry bed at origin`, 'success');
+            } else {
+                // 1. Calculate initial scale (Unit Conversion)
+                scale = (vbW > 0) ? (w_mm / vbW) : 1.0;
 
-            const margin = 10; // 10mm safety margin
-            
-            let currentW = vbW * scale;
-            let currentH = vbH * scale;
+                const margin = 10; // 10mm safety margin
+                let currentW = vbW * scale;
+                let currentH = vbH * scale;
 
-            // 3. Auto-Fit (Scale Down)
-            // If the drawing is bigger than the bed, shrink it to fit.
-            if (currentW > (bedW - margin) || currentH > (bedH - margin)) {
-                const scaleW = (bedW - margin) / currentW;
-                const scaleH = (bedH - margin) / currentH;
-                const fitScale = Math.min(scaleW, scaleH);
-                scale *= fitScale;
-                log(`Scaled down to fit bed (${(fitScale * 100).toFixed(0)}%)`, 'info');
+                // 2. Auto-Fit (Scale Down)
+                if (currentW > (bedW - margin) || currentH > (bedH - margin)) {
+                    const scaleW = (bedW - margin) / currentW;
+                    const scaleH = (bedH - margin) / currentH;
+                    const fitScale = Math.min(scaleW, scaleH);
+                    scale *= fitScale;
+                    log(`Scaled down to fit bed (${(fitScale * 100).toFixed(0)}%)`, 'info');
+                }
+
+                // 3. Centering
+                finalW = vbW * scale;
+                finalH = vbH * scale;
+
+                const offsetX = (bedW - finalW) / 2;
+                const offsetY = (bedH - finalH) / 2;
+                const vbMinX = viewbox.length === 4 ? viewbox[0] : 0;
+                const vbMinY = viewbox.length === 4 ? viewbox[1] : 0;
+
+                // Calculate final offset to shift the origin
+                finalOffsetX = offsetX - (vbMinX * scale);
+                finalOffsetY = offsetY + (vbMinY + vbH) * scale;
             }
-
-            // 4. Centering
-            // We want the drawing right in the middle of the bed.
-            const finalW = vbW * scale;
-            const finalH = vbH * scale;
-
-            const offsetX = (bedW - finalW) / 2;
-            const offsetY = (bedH - finalH) / 2;
-            const vbMinX = viewbox.length === 4 ? viewbox[0] : 0;
-            const vbMinY = viewbox.length === 4 ? viewbox[1] : 0;
-
-            // Calculate final offset to shift the origin
-            const finalOffsetX = offsetX - (vbMinX * scale);
-            // Flip Y correction: We are flipping Y, so we need to shift the "bottom" (max Y in SVG) to the "bottom" offset.
-            // Original: offsetY - (vbMinY * scale) (for non-flipped)
-            // Flipped: offsetY + (vbMinY + vbH) * scale
-            // Wait, (vbMinY + vbH) is the max Y coordinate in SVG space.
-            // When flipped, it becomes negative.
-            // So we add it back? Let's stick to the requested formula: offsetY + (vbMinY + vbH) * scale
-            const finalOffsetY = offsetY + (vbMinY + vbH) * scale;
 
             try {
                 // Get segment length from UI

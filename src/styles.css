@@ -659,3 +659,345 @@ main {
 .sim-switch-container:has(#simModeCheckbox:checked) .sim-switch-label {
     color: #10b981;
 }
+
+/* Premium SVG Button Icons & Micro-Animations */
+.btn-icon-svg {
+    width: 14px;
+    height: 14px;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 6px;
+    stroke-width: 2px;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-action:hover .btn-icon-svg {
+    color: #93c5fd;
+}
+
+#btnSettings:hover .btn-icon-svg {
+    transform: rotate(45deg);
+}
+
+#btnJog:hover .btn-icon-svg {
+    transform: translateY(-2px) rotate(-10deg);
+}
+
+/* ============================================================
+   URUMICAM DESIGN LANGUAGE IMPORT
+   ============================================================ */
+
+/* Color Variables */
+:root {
+    --uc-bg-base: #0d1117;
+    --uc-bg-surface: #161b22;
+    --uc-bg-elevated: #1c2128;
+    --uc-text-primary: #e6edf3;
+    --uc-text-secondary: #8b949e;
+    --uc-text-muted: #484f58;
+    --uc-accent-blue: #58a6ff;
+    --uc-accent-blue-dim: rgba(88, 166, 255, 0.12);
+    --uc-accent-green: #3fb950;
+    --uc-accent-green-dim: rgba(63, 185, 80, 0.12);
+    --uc-accent-amber: #d29922;
+    --uc-accent-amber-dim: rgba(210, 153, 34, 0.15);
+    --uc-accent-purple: #bc8cff;
+    --uc-accent-purple-dim: rgba(188, 140, 255, 0.15);
+    --uc-border-default: rgba(240, 246, 252, 0.12);
+    --uc-border-muted: rgba(240, 246, 252, 0.06);
+    --uc-radius-md: 10px;
+    --uc-radius-lg: 16px;
+    --uc-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --uc-shadow-glow-blue: 0 0 15px rgba(88, 166, 255, 0.25);
+    --uc-shadow-glow-purple: 0 0 15px rgba(188, 140, 255, 0.25);
+}
+
+/* Camera Sidebar Layout */
+.camera-controls-col {
+    background: var(--uc-bg-surface) !important;
+    border: 1px solid var(--uc-border-default) !important;
+    border-radius: var(--uc-radius-lg) !important;
+    box-shadow: var(--uc-shadow-md) !important;
+    padding: 1.25rem !important;
+}
+
+/* Camera Subpanels (Cards) */
+.camera-subpanel {
+    background: var(--uc-bg-elevated) !important;
+    border: 1px solid var(--uc-border-default) !important;
+    border-radius: var(--uc-radius-md) !important;
+    padding: 1.1rem !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.camera-subpanel:hover {
+    border-color: rgba(88, 166, 255, 0.3) !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Subpanel Subtitles */
+.panel-subtitle {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.8rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+    color: var(--uc-accent-blue) !important;
+    margin-bottom: 0.5rem !important;
+    border-bottom: 1px solid var(--uc-border-muted);
+    padding-bottom: 0.4rem;
+}
+
+/* Panel Help text */
+.help-text {
+    font-size: 0.72rem;
+    color: var(--uc-text-secondary);
+    line-height: 1.4;
+}
+
+/* Method switcher buttons */
+.camera-methods-nav {
+    background: var(--uc-bg-elevated) !important;
+    border: 1px solid var(--uc-border-default) !important;
+    padding: 0.25rem !important;
+}
+
+.btn-method {
+    padding: 0.5rem 0.75rem !important;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-radius: 6px !important;
+    color: var(--uc-text-secondary) !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+
+.btn-method:hover {
+    color: var(--uc-text-primary) !important;
+    background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.btn-method.active {
+    background: var(--uc-accent-blue-dim) !important;
+    color: var(--uc-accent-blue) !important;
+    border: 1px solid rgba(88, 166, 255, 0.3) !important;
+    box-shadow: var(--uc-shadow-glow-blue) !important;
+}
+
+/* Premium UrumiCam Action Buttons */
+.camera-subpanel .btn-action {
+    background: var(--uc-bg-surface) !important;
+    border: 1px solid var(--uc-border-default) !important;
+    color: var(--uc-text-primary) !important;
+    font-weight: 600 !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.camera-subpanel .btn-action:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border-color: var(--uc-accent-blue) !important;
+    color: var(--uc-accent-blue) !important;
+    box-shadow: var(--uc-shadow-glow-blue) !important;
+}
+
+.camera-subpanel .btn-action:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* Gantry Scan Primary Button */
+#btnStartGantryScan {
+    background: linear-gradient(135deg, #238636, #2ea043) !important;
+    border: 1px solid rgba(63, 185, 80, 0.3) !important;
+    color: white !important;
+    border-radius: var(--uc-radius-md) !important;
+    box-shadow: 0 2px 8px rgba(63, 185, 80, 0.25) !important;
+    transition: all 0.2s ease;
+}
+
+#btnStartGantryScan:hover {
+    background: linear-gradient(135deg, #2ea043, #3fb950) !important;
+    box-shadow: 0 4px 16px rgba(63, 185, 80, 0.4) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Import Workpiece SVG Glowing button */
+#btnImportWorkpieceSvg {
+    background: linear-gradient(135deg, #8b5cf6, #7c3aed) !important;
+    border: 1px solid rgba(139, 92, 246, 0.3) !important;
+    color: white !important;
+    box-shadow: 0 2px 10px rgba(139, 92, 246, 0.3) !important;
+    border-radius: 6px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+    transition: all 0.25s ease;
+}
+
+#btnImportWorkpieceSvg:hover:not(:disabled) {
+    background: linear-gradient(135deg, #a78bfa, #8b5cf6) !important;
+    box-shadow: var(--uc-shadow-glow-purple) !important;
+    transform: translateY(-1px) !important;
+}
+
+#btnImportWorkpieceSvg:disabled {
+    opacity: 0.35;
+    background: var(--uc-bg-surface) !important;
+    border-color: var(--uc-border-muted) !important;
+    box-shadow: none !important;
+    cursor: not-allowed;
+}
+
+/* Canvas View Wrapper */
+.camera-canvas-col {
+    background: var(--uc-bg-base) !important;
+    border: 1px solid var(--uc-border-default) !important;
+    border-radius: var(--uc-radius-lg) !important;
+    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.8) !important;
+}
+
+/* Canvas Meta Bar */
+.canvas-meta-bar {
+    background: var(--uc-bg-overlay) !important;
+    border-top: 1px solid var(--uc-border-default) !important;
+    font-family: var(--font-mono) !important;
+}
+
+/* QR Code styling */
+.qr-container {
+    background: rgba(13, 17, 23, 0.4) !important;
+    border: 1px solid var(--uc-border-muted) !important;
+    border-radius: var(--uc-radius-md) !important;
+    padding: 1rem !important;
+}
+
+#qrCanvas {
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.1) !important;
+    border: 2px solid var(--uc-border-default) !important;
+}
+
+/* Contour Outlines highlight */
+.neon-glow {
+    filter: drop-shadow(0 0 5px rgba(139, 92, 246, 0.75)) 
+            drop-shadow(0 0 15px rgba(139, 92, 246, 0.35)) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW TAB  ─  Tool Palette
+   ═══════════════════════════════════════════════════════════════ */
+
+.draw-palette {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-dark);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.draw-palette-tools {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.draw-tool-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 0.35rem 0.55rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 0.65rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.draw-tool-btn svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+}
+
+.draw-tool-btn:hover {
+    background: #334155;
+    color: #f1f5f9;
+    border-color: #475569;
+}
+
+.draw-tool-btn.active {
+    background: #1e3a5f;
+    color: #60a5fa;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 1px rgba(59,130,246,0.3);
+}
+
+.draw-palette-options {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.draw-option-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.draw-option-group label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #64748b;
+}
+
+.draw-option-group input[type="number"] {
+    background: #0f172a;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    color: #f1f5f9;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.draw-option-group input[type="number"]:focus {
+    border-color: #3b82f6;
+}
+
+.draw-palette-actions {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+/* Draw canvas – the actual cutter-bed drawing area */
+#drawPanel {
+    background: #f8fafc;
+}
+
+#drawCanvas {
+    cursor: crosshair;
+    touch-action: none;
+}
+
