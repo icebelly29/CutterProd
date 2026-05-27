@@ -69,7 +69,9 @@ A full interactive vector drawing surface mapped to the physical cutter bed coor
 ### UrumiCam Integration
 - **Real-time SVG push** — workpiece boundary contours detected by UrumiCam are pushed directly into CutterProd over HTTP and auto-compiled to trajectory data.
 - **Two scanning modes:**
-  - *Method 1* — Live gantry-mounted camera with ArUco marker calibration and mosaic stitching.
+  - *Method 1* — Live gantry-mounted camera with:
+    - **Workpiece Auto-Detection** — Automatic bimodal Otsu-binarized edge segmentation to locate and confirm workpieces on the bed.
+    - **ArUco Marker Calibration** — Camera DPI and FOV calibration using an ArUco Marker ID 0 (4x4 dictionary, 20mm physical size) to dynamically calculate pixels-per-mm and the exact $40\text{ mm} \times 30\text{ mm}$ ($4\text{ cm} \times 3\text{ cm}$) field of view.
   - *Method 2* — Mobile phone photo with perspective rectification (homography) and Canny edge detection.
 - The UrumiCam UI opens in its own tab via the **UrumiCam** link in the toolbar.
 

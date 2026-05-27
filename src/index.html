@@ -30,34 +30,87 @@
     </header>
 
     <main>
-        <!-- Left: Console -->
-        <section class="console-panel">
-            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Console Log</span>
-                <button id="btnClear" class="btn btn-action"
-                    style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Clear</button>
-            </div>
-            <div class="quick-actions"
-                style="display: flex; gap: 0.5rem; padding: 0.5rem; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); align-items: center; flex-wrap: wrap;">
-                <button id="btnToggleMotors" class="btn btn-action" style="font-size: 0.75rem;"
-                    data-enabled="false">Enable Motors</button>
-                <button id="btnPingAll" class="btn btn-action" style="font-size: 0.75rem;">Ping All</button>
-                <div style="display: flex; align-items: center; gap: 0.25rem;">
-                    <input type="number" id="pingNodeId" placeholder="ID"
-                        style="width: 50px; padding: 0.2rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: rgba(15, 23, 42, 0.5); color: white; outline: none;">
-                    <button id="btnPingNode" class="btn btn-action" style="font-size: 0.75rem;">Ping</button>
+        <!-- Left: Sidebar Column (Suction Bed & Console) -->
+        <div class="sidebar-column">
+            <!-- Suction Bed Control Panel -->
+            <section class="suction-panel">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <svg id="suctionFanIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fan-icon">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M12 2v4M12 18v4M4 12h4M16 12h4M12 12c2.5-2.5 2.5-5.5 1-7M12 12c-2.5 2.5-5.5 2.5-7 1M12 12c2.5 2.5 2.5 5.5 1 7M12 12c-2.5-2.5-5.5-2.5-7-1"></path>
+                        </svg>
+                        <span>Suction Bed Control</span>
+                    </div>
+                    <span id="suctionStatusText" class="suction-status-idle">OFF</span>
                 </div>
-            </div>
-            <div class="console-output" id="consoleOutput">
-                <div class="console-line log-info">System initialized...</div>
-                <div class="console-line log-info">Click 'Connect Serial' to connect to Pico.</div>
-            </div>
-            <div class="console-input-area">
-                <span class="console-prefix">&gt;</span>
-                <input type="text" id="cmdInput" placeholder="Type command..." autocomplete="off">
-                <button class="btn btn-primary" id="btnRun">Run</button>
-            </div>
-        </section>
+                <div class="suction-body">
+                    <!-- Throttle Slider -->
+                    <div class="suction-row">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;">
+                            <span style="color: var(--text-muted);">Suction Bed Throttle</span>
+                            <span id="suctionThrottleVal" style="color: var(--accent); font-weight: 700;">80%</span>
+                        </div>
+                        <div class="slider-input-group" style="gap: 0.5rem;">
+                            <input type="range" id="suctionThrottleSlider" value="80" min="0" max="100" step="5" style="flex: 1;">
+                            <input type="number" id="suctionThrottleInput" value="80" min="0" max="100" step="5" style="width: 55px; text-align: center; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border); border-radius: 4px; color: white; padding: 0.2rem; font-size: 0.75rem;">
+                        </div>
+                    </div>
+                    
+                    <!-- Mode Selector -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; margin-bottom: 0.5rem;">
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Activation Mode</span>
+                        <div class="suction-mode-toggle">
+                            <button id="btnSuctionModeAuto" class="suction-mode-btn active" title="Automatically activate sections under drawing">Auto</button>
+                            <button id="btnSuctionModeManual" class="suction-mode-btn" title="Manually click sections to toggle">Manual</button>
+                        </div>
+                    </div>
+
+                    <!-- 2x3 Grid of Bed Sections -->
+                    <div class="suction-grid-container">
+                        <span style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em;">Bed Sections</span>
+                        <div class="suction-grid">
+                            <div class="suction-cell" data-zone="1" title="Section 1 (Top Left)"><span>1</span><small>Top L</small></div>
+                            <div class="suction-cell" data-zone="2" title="Section 2 (Top Middle)"><span>2</span><small>Top M</small></div>
+                            <div class="suction-cell" data-zone="3" title="Section 3 (Top Right)"><span>3</span><small>Top R</small></div>
+                            <div class="suction-cell" data-zone="4" title="Section 4 (Bottom Left)"><span>4</span><small>Bot L</small></div>
+                            <div class="suction-cell" data-zone="5" title="Section 5 (Bottom Middle)"><span>5</span><small>Bot M</small></div>
+                            <div class="suction-cell" data-zone="6" title="Section 6 (Bottom Right)"><span>6</span><small>Bot R</small></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Left: Console -->
+            <section class="console-panel" style="flex: 1;">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>Console Log</span>
+                    <button id="btnClear" class="btn btn-action"
+                        style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Clear</button>
+                </div>
+                <div class="quick-actions"
+                    style="display: flex; gap: 0.5rem; padding: 0.5rem; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); align-items: center; flex-wrap: wrap;">
+                    <button id="btnToggleMotors" class="btn btn-action" style="font-size: 0.75rem;"
+                        data-enabled="false">Enable Motors</button>
+                    <button id="btnPingAll" class="btn btn-action" style="font-size: 0.75rem;">Ping All</button>
+                    <div style="display: flex; align-items: center; gap: 0.25rem;">
+                        <input type="number" id="pingNodeId" placeholder="ID"
+                            style="width: 50px; padding: 0.2rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: rgba(15, 23, 42, 0.5); color: white; outline: none;">
+                        <button id="btnPingNode" class="btn btn-action" style="font-size: 0.75rem;">Ping</button>
+                    </div>
+                </div>
+                <div class="console-output" id="consoleOutput">
+                    <div class="console-line log-info">System initialized...</div>
+                    <div class="console-line log-info">Click 'Connect Serial' to connect to Pico.</div>
+                </div>
+                <div class="console-input-area">
+                    <span class="console-prefix">&gt;</span>
+                    <input type="text" id="cmdInput" placeholder="Type command..." autocomplete="off">
+                    <button class="btn btn-primary" id="btnRun">Run</button>
+                </div>
+            </section>
+        </div>
+
 
         <!-- Right: Workspace -->
         <section class="workspace-panel">
