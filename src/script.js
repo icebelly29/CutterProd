@@ -70,7 +70,11 @@ const state = {
     suctionThrottle: 80, // Default suction bed throttle speed
     suctionMode: 'auto', // Suction mode: 'auto' or 'manual'
     suctionZones: [false, false, false, false, false, false], // Manual selection status for the 6 zones
-    suctionAutoActiveZones: [] // Automated active zones calculated from the drawing
+    suctionAutoActiveZones: [], // Automated active zones calculated from the drawing
+    parkEnabled: localStorage.getItem('parkEnabled') === 'true', // Whether gantry should park after job finishes
+    parkX: parseFloat(localStorage.getItem('parkX')) || 0, // X park coordinate in mm
+    parkY: parseFloat(localStorage.getItem('parkY')) || 0, // Y park coordinate in mm
+    isParking: false // Internal flag to track when the machine is executing the park move
 };
 
 // --- DOM Elements ---
@@ -187,6 +191,7 @@ function startJob() {
     
     state.wasInterrupted = false;
     state.simulatedPathIndex = -1;
+    state.isParking = false;
 
     log(`Starting Job: ${state.gcodeQueue.length} lines.`, 'success');
     
@@ -224,6 +229,149 @@ function stopJob() {
 }
 
 /**
+ * PARSE MOVE COMMAND
+ * Extracts stepper IDs and relative step counts from a relative trajectory move line.
+ * Command format: move <count> <ids> <steps> <sps>
+ */
+function parseMoveCommand(cmd) {
+    const parts = cmd.trim().split(/\s+/);
+    if (parts[0].toLowerCase() !== 'move') return null;
+    const count = parseInt(parts[1]);
+    if (isNaN(count) || parts.length < 2 + count * 2) return null;
+    
+    const ids = [];
+    const steps = [];
+    for (let i = 0; i < count; i++) {
+        ids.push(parseInt(parts[2 + i]));
+        steps.push(parseInt(parts[2 + count + i]));
+    }
+    return { ids, steps };
+}
+
+/**
+ * GENERATE PARK COMMANDS
+ * Calculates relative step motions to travel from current dead-reckoning position
+ * to the user's customized park coordinates, ensuring a safe Z retraction first.
+ */
+function generateParkCommands() {
+    const cmds = [];
+    
+    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+    const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    
+    const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+    const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+    const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+    
+    // Step 1: Ensure Z-axis is retracted to a safe height (5mm above bed)
+    const zTarget = 5; 
+    if (jogState.posZ < zTarget) {
+        const dz = zTarget - jogState.posZ;
+        const relZ = Math.round(-dz * zStepsPerMM); // positive dz (Up) -> negative steps
+        if (relZ !== 0) {
+            const stepVz = Math.abs(Math.round(feedRate * zStepsPerMM));
+            cmds.push(`move 1 ${idZ} ${relZ} ${stepVz}`);
+            jogState.posZ = zTarget;
+        }
+    }
+    
+    // Step 2: Traverse X and Y axes to the park coordinates
+    const dx = state.parkX - jogState.posX;
+    const dy = state.parkY - jogState.posY;
+    
+    const relX = Math.round(dx * xStepsPerMM);
+    const relY = Math.round(dy * yStepsPerMM);
+    
+    if (relX !== 0 || relY !== 0) {
+        let stepVx = Math.abs(Math.round(feedRate * xStepsPerMM));
+        let stepVy = Math.abs(Math.round(feedRate * yStepsPerMM));
+        
+        let duration = 0;
+        if (stepVx > 0 && relX !== 0) duration = Math.abs(relX) / stepVx;
+        else if (stepVy > 0 && relY !== 0) duration = Math.abs(relY) / stepVy;
+        
+        if (duration > 0) {
+            if (relX !== 0) stepVx = Math.max(1, Math.round(Math.abs(relX) / duration));
+            if (relY !== 0) stepVy = Math.max(1, Math.round(Math.abs(relY) / duration));
+        }
+        
+        const ids = [];
+        const steps = [];
+        const sps = [];
+        if (relX !== 0) { ids.push(idX); steps.push(relX); sps.push(stepVx); }
+        if (relY !== 0) { ids.push(idY); steps.push(relY); sps.push(stepVy); }
+        
+        cmds.push(`move ${ids.length} ${ids.join(' ')} ${steps.join(' ')} ${sps.join(' ')}`);
+    }
+    
+    return cmds;
+}
+
+/**
+ * PARK NOW
+ * Manually commands the gantry to travel to the park position coordinates immediately.
+ */
+function parkNow() {
+    if (!connection.connected && !document.getElementById('simModeCheckbox')?.checked) {
+        log('Park: Not connected to machine.', 'error');
+        return;
+    }
+    
+    log('Moving gantry to park position...', 'info');
+    const cmds = generateParkCommands();
+    if (cmds && cmds.length > 0) {
+        const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+        const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+        const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+        const aStepsPerDeg = getAxisSteps('aMotorSteps', 'aMicrosteps', 'aDegPerRev', 8.88);
+        
+        const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+        const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+        const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+        const idA = parseInt(document.getElementById('aRs485Id')?.value) || 4;
+
+        cmds.forEach(cmd => {
+            const isSimMode = document.getElementById('simModeCheckbox')?.checked;
+            if (isSimMode) {
+                log(`> ${cmd}`, 'tx');
+                log('PICO: ok', 'success');
+            } else {
+                connection.send(cmd, true);
+            }
+            
+            // Manually parse and update dead-reckoning position
+            const moveData = parseMoveCommand(cmd);
+            if (moveData) {
+                moveData.ids.forEach((id, idx) => {
+                    const steps = moveData.steps[idx];
+                    if (id === idX) {
+                        jogState.posX += steps / xStepsPerMM;
+                    } else if (id === idY) {
+                        jogState.posY += steps / yStepsPerMM;
+                    } else if (id === idZ) {
+                        jogState.posZ += -steps / zStepsPerMM;
+                    } else if (id === idA) {
+                        jogState.posA += steps / aStepsPerDeg;
+                    }
+                });
+            }
+        });
+        
+        // Update display labels
+        document.getElementById('jogPosX').textContent = jogState.posX.toFixed(2);
+        document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
+        document.getElementById('jogPosZ').textContent = jogState.posZ.toFixed(2);
+        document.getElementById('jogPosA').textContent = jogState.posA.toFixed(2);
+        
+        log('Park sequence executed successfully.', 'success');
+    } else {
+        log('Gantry is already at the park position.', 'info');
+    }
+}
+
+/**
  * SEND NEXT LINE
  * The "Heartbeat" of the job.
  * 
@@ -234,7 +382,8 @@ function stopJob() {
  *    - Send it to the machine.
  *    - Wait. (The 'onAck' callback will trigger this function again).
  * 3. If no lines left:
- *    - We are done!
+ *    - Check if Park Mode is enabled and execute parking first.
+ *    - Otherwise, complete the job!
  */
 function sendNextLine() {
     if (!state.isSending) return;
@@ -245,6 +394,39 @@ function sendNextLine() {
         // Track the last physical position sent
         if (state.currentLine.toLowerCase().startsWith('move')) {
             state.lastSentCmd = state.currentLine;
+            
+            // Extract axis movements and update our physical dead-reckoning position counters
+            const moveData = parseMoveCommand(state.currentLine);
+            if (moveData) {
+                const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+                const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+                const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+                const aStepsPerDeg = getAxisSteps('aMotorSteps', 'aMicrosteps', 'aDegPerRev', 8.88);
+                
+                const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+                const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+                const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+                const idA = parseInt(document.getElementById('aRs485Id')?.value) || 4;
+                
+                moveData.ids.forEach((id, idx) => {
+                    const steps = moveData.steps[idx];
+                    if (id === idX) {
+                        jogState.posX += steps / xStepsPerMM;
+                    } else if (id === idY) {
+                        jogState.posY += steps / yStepsPerMM;
+                    } else if (id === idZ) {
+                        jogState.posZ += -steps / zStepsPerMM;
+                    } else if (id === idA) {
+                        jogState.posA += steps / aStepsPerDeg;
+                    }
+                });
+                
+                // Keep coordinate UI updated in real-time
+                document.getElementById('jogPosX').textContent = jogState.posX.toFixed(2);
+                document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
+                document.getElementById('jogPosZ').textContent = jogState.posZ.toFixed(2);
+                document.getElementById('jogPosA').textContent = jogState.posA.toFixed(2);
+            }
         }
 
         const isSimMode = document.getElementById('simModeCheckbox')?.checked;
@@ -270,6 +452,19 @@ function sendNextLine() {
             log(`> ${state.currentLine}`, 'tx'); 
         }
     } else {
+        // Queue is empty, check if we need to park the gantry first
+        if (state.parkEnabled && !state.isParking) {
+            state.isParking = true;
+            log('Job trajectory completed. Initiating Gantry Park sequence...', 'info');
+            const parkCmds = generateParkCommands();
+            if (parkCmds && parkCmds.length > 0) {
+                state.gcodeQueue.push(...parkCmds);
+                sendNextLine();
+                return;
+            }
+        }
+        
+        state.isParking = false;
         finishJob();
     }
 }
@@ -292,6 +487,104 @@ function finishJob() {
 }
 
 // --- Event Listeners ---
+
+// --- Panel Toggle Logic ---
+const suctionPanelHeader = document.getElementById('suctionPanelHeader');
+const suctionPanelBody = document.getElementById('suctionPanelBody');
+const suctionPanelToggle = document.getElementById('suctionPanelToggle');
+
+if (suctionPanelHeader && suctionPanelBody) {
+    suctionPanelHeader.addEventListener('click', (e) => {
+        // Prevent toggle if clicking on the status text or other interactive elements
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
+        
+        if (suctionPanelBody.style.display === 'none') {
+            suctionPanelBody.style.display = 'flex';
+            if (suctionPanelToggle) suctionPanelToggle.style.transform = 'rotate(180deg)';
+        } else {
+            suctionPanelBody.style.display = 'none';
+            if (suctionPanelToggle) suctionPanelToggle.style.transform = 'rotate(0deg)';
+        }
+    });
+}
+
+const parkPanelHeader = document.getElementById('parkPanelHeader');
+const parkPanelBody = document.getElementById('parkPanelBody');
+const parkPanelToggle = document.getElementById('parkPanelToggle');
+
+if (parkPanelHeader && parkPanelBody) {
+    parkPanelHeader.addEventListener('click', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.closest('label')) return;
+        
+        if (parkPanelBody.style.display === 'none') {
+            parkPanelBody.style.display = 'flex';
+            if (parkPanelToggle) parkPanelToggle.style.transform = 'rotate(180deg)';
+        } else {
+            parkPanelBody.style.display = 'none';
+            if (parkPanelToggle) parkPanelToggle.style.transform = 'rotate(0deg)';
+        }
+    });
+}
+
+// Gantry Parking Control UI Bindings
+const parkXInput = document.getElementById('parkXInput');
+const parkYInput = document.getElementById('parkYInput');
+const parkModeCheckbox = document.getElementById('parkModeCheckbox');
+const parkStatusText = document.getElementById('parkStatusText');
+const btnSetParkCurrent = document.getElementById('btnSetParkCurrent');
+const btnParkNow = document.getElementById('btnParkNow');
+
+if (parkXInput && parkYInput && parkModeCheckbox) {
+    // Initialize fields with values from state
+    parkXInput.value = state.parkX;
+    parkYInput.value = state.parkY;
+    parkModeCheckbox.checked = state.parkEnabled;
+    if (parkStatusText) {
+        parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
+    }
+
+    parkXInput.addEventListener('change', () => {
+        state.parkX = parseFloat(parkXInput.value) || 0;
+        localStorage.setItem('parkX', state.parkX);
+        log(`Park position X updated to ${state.parkX} mm`, 'info');
+    });
+
+    parkYInput.addEventListener('change', () => {
+        state.parkY = parseFloat(parkYInput.value) || 0;
+        localStorage.setItem('parkY', state.parkY);
+        log(`Park position Y updated to ${state.parkY} mm`, 'info');
+    });
+
+    parkModeCheckbox.addEventListener('change', () => {
+        state.parkEnabled = parkModeCheckbox.checked;
+        localStorage.setItem('parkEnabled', state.parkEnabled);
+        if (parkStatusText) {
+            parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
+        }
+        log(`Park Mode ${state.parkEnabled ? 'Enabled' : 'Disabled'}`, 'success');
+    });
+}
+
+if (btnSetParkCurrent) {
+    btnSetParkCurrent.addEventListener('click', () => {
+        state.parkX = Math.round(jogState.posX * 100) / 100;
+        state.parkY = Math.round(jogState.posY * 100) / 100;
+        
+        if (parkXInput) parkXInput.value = state.parkX;
+        if (parkYInput) parkYInput.value = state.parkY;
+        
+        localStorage.setItem('parkX', state.parkX);
+        localStorage.setItem('parkY', state.parkY);
+        
+        log(`Set park position to current coordinates: X=${state.parkX}, Y=${state.parkY}`, 'success');
+    });
+}
+
+if (btnParkNow) {
+    btnParkNow.addEventListener('click', () => {
+        parkNow();
+    });
+}
 
 // 1. Start/Stop Button Logic
 btnStart.addEventListener('click', () => {

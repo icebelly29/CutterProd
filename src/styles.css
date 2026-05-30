@@ -1169,4 +1169,22 @@ main {
 .suction-cell:active {
     transform: scale(0.96);
 }
+
+/* ============================================================
+   GANTRY PARKING CONTROL PANEL STYLES
+   ============================================================ */
+
+#parkModeCheckbox:checked + .sim-switch-outer {
+    background: #3b82f6; /* Premium Blue when enabled */
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+}
+
+#parkModeCheckbox:checked + .sim-switch-outer .sim-switch-inner {
+    transform: translateX(14px);
+    background: #ffffff;
+}
+
+.sim-switch-container:has(#parkModeCheckbox:checked) .sim-switch-label {
+    color: #3b82f6;
+}
 

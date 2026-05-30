@@ -34,7 +34,7 @@
         <div class="sidebar-column">
             <!-- Suction Bed Control Panel -->
             <section class="suction-panel">
-                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="panel-header" id="suctionPanelHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" title="Click to toggle">
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <svg id="suctionFanIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fan-icon">
                             <circle cx="12" cy="12" r="3"></circle>
@@ -42,9 +42,12 @@
                         </svg>
                         <span>Suction Bed Control</span>
                     </div>
-                    <span id="suctionStatusText" class="suction-status-idle">OFF</span>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span id="suctionStatusText" class="suction-status-idle">OFF</span>
+                        <svg id="suctionPanelToggle" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="transition: transform 0.2s; color: var(--text-muted);"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </div>
                 </div>
-                <div class="suction-body">
+                <div class="suction-body" id="suctionPanelBody" style="display: none;">
                     <!-- Throttle Slider -->
                     <div class="suction-row">
                         <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;">
@@ -77,6 +80,60 @@
                             <div class="suction-cell" data-zone="5" title="Section 5 (Bottom Middle)"><span>5</span><small>Bot M</small></div>
                             <div class="suction-cell" data-zone="6" title="Section 6 (Bottom Right)"><span>6</span><small>Bot R</small></div>
                         </div>
+                    </div>
+            </section>
+
+            <!-- Gantry Parking Control Panel -->
+            <section class="suction-panel" id="parkPanel">
+                <div class="panel-header" id="parkPanelHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" title="Click to toggle">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #60a5fa;">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <path d="M9 17V7h4a3 3 0 0 1 0 6H9"></path>
+                        </svg>
+                        <span>Gantry Parking Control</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <!-- Slide toggle switch for Park Mode -->
+                        <label class="sim-switch-container" title="Toggle park mode after job completion" style="padding: 0.2rem 0.5rem; gap: 0.35rem;">
+                            <span class="sim-switch-label" style="font-size: 0.65rem;" id="parkStatusText">OFF</span>
+                            <input type="checkbox" id="parkModeCheckbox" style="display: none;">
+                            <div class="sim-switch-outer" style="width: 32px; height: 18px;">
+                                <div class="sim-switch-inner" style="width: 14px; height: 14px; top: 1px; left: 1px;"></div>
+                            </div>
+                        </label>
+                        <svg id="parkPanelToggle" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="transition: transform 0.2s; color: var(--text-muted);"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                    </div>
+                </div>
+                <div class="suction-body" id="parkPanelBody" style="display: none;">
+                    <!-- Coordinate Inputs -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                        <div class="form-group" style="gap: 0.2rem;">
+                            <label style="font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">Park X (mm)</label>
+                            <input type="number" id="parkXInput" value="0" step="10" min="0" style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border); border-radius: 4px; color: white; padding: 0.3rem 0.5rem; font-size: 0.8rem; font-family: var(--font-mono); width: 100%;">
+                        </div>
+                        <div class="form-group" style="gap: 0.2rem;">
+                            <label style="font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">Park Y (mm)</label>
+                            <input type="number" id="parkYInput" value="0" step="10" min="0" style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border); border-radius: 4px; color: white; padding: 0.3rem 0.5rem; font-size: 0.8rem; font-family: var(--font-mono); width: 100%;">
+                        </div>
+                    </div>
+                    
+                    <!-- Quick Actions -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.25rem;">
+                        <button class="btn btn-action" id="btnSetParkCurrent" title="Set current gantry position as park coordinates" style="font-size: 0.75rem; padding: 0.4rem 0.5rem; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 4px;">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                                <circle cx="12" cy="10" r="3"></circle>
+                            </svg>
+                            Use Current
+                        </button>
+                        <button class="btn btn-action" id="btnParkNow" title="Manually move gantry to the park position" style="font-size: 0.75rem; padding: 0.4rem 0.5rem; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 4px;">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="9 10 4 15 9 20"></polyline>
+                                <path d="M20 4v7a4 4 0 0 1-4 4H4"></path>
+                            </svg>
+                            Park Now
+                        </button>
                     </div>
                 </div>
             </section>
