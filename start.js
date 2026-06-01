@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 
 console.log('\x1b[35m%s\x1b[0m', '====================================================');
-console.log('\x1b[36m%s\x1b[0m', ' Launching CutterProd & UrumiCam Unified Server');
+console.log('\x1b[36m%s\x1b[0m', ' Launching CutterProd & UrumiCam Unified Server :3');
 console.log('\x1b[35m%s\x1b[0m', '====================================================\n');
 
 // 1. Start the CutterProd static server (npx serve src)
@@ -26,7 +26,7 @@ const pyProcess = spawn('python', pyArgs, {
 // Graceful cleanup on exit
 function shutdown() {
     console.log('\n\x1b[31m%s\x1b[0m', ' Shutting down unified servers...');
-    
+
     // Kill processes safely
     try {
         if (process.platform === 'win32') {
@@ -39,7 +39,7 @@ function shutdown() {
     } catch (e) {
         // Ignore kill errors if already dead
     }
-    
+
     setTimeout(() => {
         process.exit(0);
     }, 500);

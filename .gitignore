@@ -3,8 +3,14 @@ node_modules/
 jspm_packages/
 web_modules/
 
-# Nested git repositories / submodules that are managed separately
-UrumiCam/
+# UrumiCam specific ignores
+UrumiCam/__pycache__/
+UrumiCam/venv/
+UrumiCam/.venv/
+UrumiCam/static/uploads/*
+!UrumiCam/static/uploads/.gitkeep
+UrumiCam/scans/*
+!UrumiCam/scans/.gitkeep
 
 # Handoff and temporary documentation
 handoff.md
