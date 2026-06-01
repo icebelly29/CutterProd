@@ -4,7 +4,7 @@ jspm_packages/
 web_modules/
 
 # UrumiCam specific ignores
-UrumiCam/__pycache__/
+UrumiCam/**/__pycache__/
 UrumiCam/venv/
 UrumiCam/.venv/
 UrumiCam/static/uploads/*
