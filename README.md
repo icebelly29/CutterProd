@@ -66,17 +66,25 @@ A full interactive vector drawing surface mapped to the physical cutter bed coor
 - **Send to Cutter** — exports all shapes as an SVG, pipes it through the `SvgConverter` trajectory compiler, and switches to the Trajectory Preview.
 - All shapes (including rectangles, ellipses, and Bézier curves) are exported as `<path>` elements for full parser compatibility.
 
-### UrumiCam Integration
+### Toolpath & Cut Methods
+Native support for multi-layered cut profiles. In the Draw tab or via imported SVG `data-method` attributes, shapes can be assigned specific toolpaths:
+- **Thru Cut** (Blue): Plunges to the maximum configured Z depth to sever the material completely.
+- **Score / Off-Base** (Purple): Partial plunge depth to slice through upper layers (e.g. stickers).
+- **Crease** (Amber/Yellow): Uses a specialized blunt tool offset or shallower depth to fold without cutting.
+
+### UrumiCam Integration & Smart Skeletonization
 - **Real-time SVG push** — workpiece boundary contours detected by UrumiCam are pushed directly into CutterProd over HTTP and auto-compiled to trajectory data.
+- **Sub-Millimeter Skeletonization** — hand-drawn ink patterns are captured, adaptively thresholded (ignoring ArUco frames), and traced into precision polylines using Lingdong's `TraceSkeleton` algorithm.
 - **Two scanning modes:**
   - *Method 1* — Live gantry-mounted camera with ArUco marker calibration and mosaic stitching.
   - *Method 2* — Mobile phone photo with perspective rectification (homography) and Canny edge detection.
 - The UrumiCam UI opens in its own tab via the **UrumiCam** link in the toolbar.
 
-### Machine Control
+### Machine Control & End Effectors
 - **WebSerial communication** — direct USB connection to the Raspberry Pi Pico, no drivers or backend required.
 - **Smart buffer management** — handles `nope` (buffer full) / `ready` flow control for seamless large-file streaming.
-- **Safe retract on restart** — if a job is interrupted, a vertical Z-lift is injected before the next start to prevent drag crashes.
+- **End Effector Dashboard** — Sidebar controls for immediate **Vacuum Bed** toggling and absolute **Gantry Z-Parking**.
+- **Sequential Execution Pipeline** — Jobs are bundled into distinct tasks (e.g. `[Task 1: Homing]`, `[Task 2: Cutting]`, `[Task 3: Parking]`) ensuring safe z-retracts and zero-collision restarts.
 - **Jog control modal** — D-pad for X/Y, vertical buttons for Z, rotary buttons for A-axis.
   - Keyboard: `Arrow keys` (X/Y), `Page Up/Down` (Z), `[ ]` (A-axis), `Home` (zero all).
 - **Simulation mode** — toggle to preview job execution without a connected machine.
