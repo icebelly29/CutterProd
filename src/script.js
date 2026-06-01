@@ -36,7 +36,7 @@ import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
 import { handleFile } from './FileHandler.js';
-import { CanvasEditor } from './CanvasEditor.js';
+import { CanvasEditor } from './CanvasEditor.js?v=3';
 
 
 /**
@@ -66,7 +66,15 @@ const state = {
     wasInterrupted: false, // Flags if the job was stopped midway
     isWaitingForReady: false, // Flag to wait for Pico's "ready" when buffer is full
     resendTimeout: null, // Tracks the timeout for resending commands to prevent spam
-    simulatedPathIndex: -1 // Tracks executed path index in simulation and live runs
+    simulatedPathIndex: -1, // Tracks executed path index in simulation and live runs
+    suctionThrottle: 80, // Default suction bed throttle speed
+    suctionMode: 'auto', // Suction mode: 'auto' or 'manual'
+    suctionZones: [false, false, false, false, false, false], // Manual selection status for the 6 zones
+    suctionAutoActiveZones: [], // Automated active zones calculated from the drawing
+    parkEnabled: localStorage.getItem('parkEnabled') === 'true', // Whether gantry should park after job finishes
+    parkX: parseFloat(localStorage.getItem('parkX')) || 0, // X park coordinate in mm
+    parkY: parseFloat(localStorage.getItem('parkY')) || 0, // Y park coordinate in mm
+    isParking: false // Internal flag to track when the machine is executing the park move
 };
 
 // --- DOM Elements ---
@@ -140,6 +148,18 @@ function startJob() {
     
     if (state.gcodeQueue.length === 0) return;
 
+    // --- SUCTION BED INJECTION ---
+    // Inject suction activation commands at the front of the queue
+    const activeList = state.suctionMode === 'auto' ? state.suctionAutoActiveZones : state.suctionZones.map((z, idx) => z ? (idx + 1) : null).filter(z => z !== null);
+    const zMask = [0, 0, 0, 0, 0, 0];
+    activeList.forEach(z => {
+        if (z >= 1 && z <= 6) zMask[z - 1] = 1;
+    });
+
+    state.gcodeQueue.unshift(`suction speed ${state.suctionThrottle}`);
+    state.gcodeQueue.unshift(`suction zones ${zMask.join(' ')}`);
+    log(`Injected Suction Settings: zones [${zMask.join(' ')}] speed ${state.suctionThrottle}%`, 'info');
+
     // --- SAFE RETRACT INJECTION ---
     // If the machine was stopped mid-job, it might still have the pen down.
     // We inject a pure vertical lift at its last known position before starting.
@@ -171,6 +191,7 @@ function startJob() {
     
     state.wasInterrupted = false;
     state.simulatedPathIndex = -1;
+    state.isParking = false;
 
     log(`Starting Job: ${state.gcodeQueue.length} lines.`, 'success');
     
@@ -197,8 +218,157 @@ function stopJob() {
         state.resendTimeout = null;
     }
     
-    log('Job Stopped. Position saved for safe retract on restart.', 'error');
+    // Shut off suction immediately for safety and power efficiency
+    if (connection.connected) {
+        connection.send('suction speed 0', true);
+    }
+    updateSuctionUI();
+    
+    log('Job Stopped. Position saved for safe retract on restart. Suction deactivated.', 'error');
     setStartButtonState(false); // Turn button back to Green/Start
+}
+
+/**
+ * PARSE MOVE COMMAND
+ * Extracts stepper IDs and relative step counts from a relative trajectory move line.
+ * Command format: move <count> <ids> <steps> <sps>
+ */
+function parseMoveCommand(cmd) {
+    const parts = cmd.trim().split(/\s+/);
+    if (parts[0].toLowerCase() !== 'move') return null;
+    const count = parseInt(parts[1]);
+    if (isNaN(count) || parts.length < 2 + count * 2) return null;
+    
+    const ids = [];
+    const steps = [];
+    for (let i = 0; i < count; i++) {
+        ids.push(parseInt(parts[2 + i]));
+        steps.push(parseInt(parts[2 + count + i]));
+    }
+    return { ids, steps };
+}
+
+/**
+ * GENERATE PARK COMMANDS
+ * Calculates relative step motions to travel from current dead-reckoning position
+ * to the user's customized park coordinates, ensuring a safe Z retraction first.
+ */
+function generateParkCommands() {
+    const cmds = [];
+    
+    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+    const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    
+    const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+    const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+    const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+    
+    // Step 1: Ensure Z-axis is retracted to a safe height (5mm above bed)
+    const zTarget = 5; 
+    if (jogState.posZ < zTarget) {
+        const dz = zTarget - jogState.posZ;
+        const relZ = Math.round(-dz * zStepsPerMM); // positive dz (Up) -> negative steps
+        if (relZ !== 0) {
+            const stepVz = Math.abs(Math.round(feedRate * zStepsPerMM));
+            cmds.push(`move 1 ${idZ} ${relZ} ${stepVz}`);
+            jogState.posZ = zTarget;
+        }
+    }
+    
+    // Step 2: Traverse X and Y axes to the park coordinates
+    const dx = state.parkX - jogState.posX;
+    const dy = state.parkY - jogState.posY;
+    
+    const relX = Math.round(dx * xStepsPerMM);
+    const relY = Math.round(dy * yStepsPerMM);
+    
+    if (relX !== 0 || relY !== 0) {
+        let stepVx = Math.abs(Math.round(feedRate * xStepsPerMM));
+        let stepVy = Math.abs(Math.round(feedRate * yStepsPerMM));
+        
+        let duration = 0;
+        if (stepVx > 0 && relX !== 0) duration = Math.abs(relX) / stepVx;
+        else if (stepVy > 0 && relY !== 0) duration = Math.abs(relY) / stepVy;
+        
+        if (duration > 0) {
+            if (relX !== 0) stepVx = Math.max(1, Math.round(Math.abs(relX) / duration));
+            if (relY !== 0) stepVy = Math.max(1, Math.round(Math.abs(relY) / duration));
+        }
+        
+        const ids = [];
+        const steps = [];
+        const sps = [];
+        if (relX !== 0) { ids.push(idX); steps.push(relX); sps.push(stepVx); }
+        if (relY !== 0) { ids.push(idY); steps.push(relY); sps.push(stepVy); }
+        
+        cmds.push(`move ${ids.length} ${ids.join(' ')} ${steps.join(' ')} ${sps.join(' ')}`);
+    }
+    
+    return cmds;
+}
+
+/**
+ * PARK NOW
+ * Manually commands the gantry to travel to the park position coordinates immediately.
+ */
+function parkNow() {
+    if (!connection.connected && !document.getElementById('simModeCheckbox')?.checked) {
+        log('Park: Not connected to machine.', 'error');
+        return;
+    }
+    
+    log('Moving gantry to park position...', 'info');
+    const cmds = generateParkCommands();
+    if (cmds && cmds.length > 0) {
+        const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+        const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+        const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+        const aStepsPerDeg = getAxisSteps('aMotorSteps', 'aMicrosteps', 'aDegPerRev', 8.88);
+        
+        const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+        const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+        const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+        const idA = parseInt(document.getElementById('aRs485Id')?.value) || 4;
+
+        cmds.forEach(cmd => {
+            const isSimMode = document.getElementById('simModeCheckbox')?.checked;
+            if (isSimMode) {
+                log(`> ${cmd}`, 'tx');
+                log('PICO: ok', 'success');
+            } else {
+                connection.send(cmd, true);
+            }
+            
+            // Manually parse and update dead-reckoning position
+            const moveData = parseMoveCommand(cmd);
+            if (moveData) {
+                moveData.ids.forEach((id, idx) => {
+                    const steps = moveData.steps[idx];
+                    if (id === idX) {
+                        jogState.posX += steps / xStepsPerMM;
+                    } else if (id === idY) {
+                        jogState.posY += steps / yStepsPerMM;
+                    } else if (id === idZ) {
+                        jogState.posZ += -steps / zStepsPerMM;
+                    } else if (id === idA) {
+                        jogState.posA += steps / aStepsPerDeg;
+                    }
+                });
+            }
+        });
+        
+        // Update display labels
+        document.getElementById('jogPosX').textContent = jogState.posX.toFixed(2);
+        document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
+        document.getElementById('jogPosZ').textContent = jogState.posZ.toFixed(2);
+        document.getElementById('jogPosA').textContent = jogState.posA.toFixed(2);
+        
+        log('Park sequence executed successfully.', 'success');
+    } else {
+        log('Gantry is already at the park position.', 'info');
+    }
 }
 
 /**
@@ -212,7 +382,8 @@ function stopJob() {
  *    - Send it to the machine.
  *    - Wait. (The 'onAck' callback will trigger this function again).
  * 3. If no lines left:
- *    - We are done!
+ *    - Check if Park Mode is enabled and execute parking first.
+ *    - Otherwise, complete the job!
  */
 function sendNextLine() {
     if (!state.isSending) return;
@@ -223,20 +394,39 @@ function sendNextLine() {
         // Track the last physical position sent
         if (state.currentLine.toLowerCase().startsWith('move')) {
             state.lastSentCmd = state.currentLine;
-        }
-
-        if (state.currentLine === 'PAUSE_FOR_TOOL_CHANGE') {
-            log('Job Paused. Please change the tool to CUTTER.', 'warning');
-            setTimeout(() => {
-                const ready = confirm("CREASING COMPLETE!\n\nPlease replace the creasing tool with the CUTTER TOOL.\nEnsure safety before proceeding.\n\nClick OK when the tool is changed and you are ready to resume cutting.");
-                if (ready) {
-                    log('Tool changed to Cutter. Resuming job.', 'success');
-                    sendNextLine();
-                } else {
-                    stopJob();
-                }
-            }, 100);
-            return;
+            
+            // Extract axis movements and update our physical dead-reckoning position counters
+            const moveData = parseMoveCommand(state.currentLine);
+            if (moveData) {
+                const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+                const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+                const zStepsPerMM = getAxisSteps('zMotorSteps', 'zMicrosteps', 'zMmPerRev', 800);
+                const aStepsPerDeg = getAxisSteps('aMotorSteps', 'aMicrosteps', 'aDegPerRev', 8.88);
+                
+                const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+                const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+                const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+                const idA = parseInt(document.getElementById('aRs485Id')?.value) || 4;
+                
+                moveData.ids.forEach((id, idx) => {
+                    const steps = moveData.steps[idx];
+                    if (id === idX) {
+                        jogState.posX += steps / xStepsPerMM;
+                    } else if (id === idY) {
+                        jogState.posY += steps / yStepsPerMM;
+                    } else if (id === idZ) {
+                        jogState.posZ += -steps / zStepsPerMM;
+                    } else if (id === idA) {
+                        jogState.posA += steps / aStepsPerDeg;
+                    }
+                });
+                
+                // Keep coordinate UI updated in real-time
+                document.getElementById('jogPosX').textContent = jogState.posX.toFixed(2);
+                document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
+                document.getElementById('jogPosZ').textContent = jogState.posZ.toFixed(2);
+                document.getElementById('jogPosA').textContent = jogState.posA.toFixed(2);
+            }
         }
 
         const isSimMode = document.getElementById('simModeCheckbox')?.checked;
@@ -262,6 +452,19 @@ function sendNextLine() {
             log(`> ${state.currentLine}`, 'tx'); 
         }
     } else {
+        // Queue is empty, check if we need to park the gantry first
+        if (state.parkEnabled && !state.isParking) {
+            state.isParking = true;
+            log('Job trajectory completed. Initiating Gantry Park sequence...', 'info');
+            const parkCmds = generateParkCommands();
+            if (parkCmds && parkCmds.length > 0) {
+                state.gcodeQueue.push(...parkCmds);
+                sendNextLine();
+                return;
+            }
+        }
+        
+        state.isParking = false;
         finishJob();
     }
 }
@@ -272,11 +475,116 @@ function sendNextLine() {
  */
 function finishJob() {
     state.isSending = false;
-    log('Job Complete.', 'success');
+    
+    // Deactivate suction upon completion
+    if (connection.connected) {
+        connection.send('suction speed 0', true);
+    }
+    updateSuctionUI();
+    
+    log('Job Complete. Suction deactivated.', 'success');
     setStartButtonState(false);
 }
 
 // --- Event Listeners ---
+
+// --- Panel Toggle Logic ---
+const suctionPanelHeader = document.getElementById('suctionPanelHeader');
+const suctionPanelBody = document.getElementById('suctionPanelBody');
+const suctionPanelToggle = document.getElementById('suctionPanelToggle');
+
+if (suctionPanelHeader && suctionPanelBody) {
+    suctionPanelHeader.addEventListener('click', (e) => {
+        // Prevent toggle if clicking on the status text or other interactive elements
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
+        
+        if (suctionPanelBody.style.display === 'none') {
+            suctionPanelBody.style.display = 'flex';
+            if (suctionPanelToggle) suctionPanelToggle.style.transform = 'rotate(180deg)';
+        } else {
+            suctionPanelBody.style.display = 'none';
+            if (suctionPanelToggle) suctionPanelToggle.style.transform = 'rotate(0deg)';
+        }
+    });
+}
+
+const parkPanelHeader = document.getElementById('parkPanelHeader');
+const parkPanelBody = document.getElementById('parkPanelBody');
+const parkPanelToggle = document.getElementById('parkPanelToggle');
+
+if (parkPanelHeader && parkPanelBody) {
+    parkPanelHeader.addEventListener('click', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.closest('label')) return;
+        
+        if (parkPanelBody.style.display === 'none') {
+            parkPanelBody.style.display = 'flex';
+            if (parkPanelToggle) parkPanelToggle.style.transform = 'rotate(180deg)';
+        } else {
+            parkPanelBody.style.display = 'none';
+            if (parkPanelToggle) parkPanelToggle.style.transform = 'rotate(0deg)';
+        }
+    });
+}
+
+// Gantry Parking Control UI Bindings
+const parkXInput = document.getElementById('parkXInput');
+const parkYInput = document.getElementById('parkYInput');
+const parkModeCheckbox = document.getElementById('parkModeCheckbox');
+const parkStatusText = document.getElementById('parkStatusText');
+const btnSetParkCurrent = document.getElementById('btnSetParkCurrent');
+const btnParkNow = document.getElementById('btnParkNow');
+
+if (parkXInput && parkYInput && parkModeCheckbox) {
+    // Initialize fields with values from state
+    parkXInput.value = state.parkX;
+    parkYInput.value = state.parkY;
+    parkModeCheckbox.checked = state.parkEnabled;
+    if (parkStatusText) {
+        parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
+    }
+
+    parkXInput.addEventListener('change', () => {
+        state.parkX = parseFloat(parkXInput.value) || 0;
+        localStorage.setItem('parkX', state.parkX);
+        log(`Park position X updated to ${state.parkX} mm`, 'info');
+    });
+
+    parkYInput.addEventListener('change', () => {
+        state.parkY = parseFloat(parkYInput.value) || 0;
+        localStorage.setItem('parkY', state.parkY);
+        log(`Park position Y updated to ${state.parkY} mm`, 'info');
+    });
+
+    parkModeCheckbox.addEventListener('change', () => {
+        state.parkEnabled = parkModeCheckbox.checked;
+        localStorage.setItem('parkEnabled', state.parkEnabled);
+        if (parkStatusText) {
+            parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
+        }
+        log(`Park Mode ${state.parkEnabled ? 'Enabled' : 'Disabled'}`, 'success');
+    });
+}
+
+if (btnSetParkCurrent) {
+    btnSetParkCurrent.addEventListener('click', () => {
+        state.parkX = Math.round(jogState.posX * 100) / 100;
+        state.parkY = Math.round(jogState.posY * 100) / 100;
+        
+        if (parkXInput) parkXInput.value = state.parkX;
+        if (parkYInput) parkYInput.value = state.parkY;
+        
+        localStorage.setItem('parkX', state.parkX);
+        localStorage.setItem('parkY', state.parkY);
+        
+        log(`Set park position to current coordinates: X=${state.parkX}, Y=${state.parkY}`, 'success');
+    });
+}
+
+if (btnParkNow) {
+    btnParkNow.addEventListener('click', () => {
+        parkNow();
+    });
+}
 
 // 1. Start/Stop Button Logic
 btnStart.addEventListener('click', () => {
@@ -440,99 +748,9 @@ document.getElementById('btnConnect').addEventListener('click', () => {
 // When user types in the editor, update our global variable so the preview knows.
 editor.addEventListener('input', () => {
     state.gcode = editor.value;
+    state.suctionAutoActiveZones = calculateActiveZones(state.gcode);
+    updateSuctionUI();
 });
-
-// --- Panel Toggle Logic ---
-const suctionPanelHeader = document.getElementById('suctionPanelHeader');
-const suctionPanelBody = document.getElementById('suctionPanelBody');
-const suctionPanelToggle = document.getElementById('suctionPanelToggle');
-
-if (suctionPanelHeader && suctionPanelBody) {
-    suctionPanelHeader.addEventListener('click', () => {
-        const isHidden = suctionPanelBody.style.display === 'none';
-        suctionPanelBody.style.display = isHidden ? 'block' : 'none';
-        if (suctionPanelToggle) {
-            suctionPanelToggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-        }
-    });
-}
-
-const parkPanelHeader = document.getElementById('parkPanelHeader');
-const parkPanelBody = document.getElementById('parkPanelBody');
-const parkPanelToggle = document.getElementById('parkPanelToggle');
-
-if (parkPanelHeader && parkPanelBody) {
-    parkPanelHeader.addEventListener('click', () => {
-        const isHidden = parkPanelBody.style.display === 'none';
-        parkPanelBody.style.display = isHidden ? 'block' : 'none';
-        if (parkPanelToggle) {
-            parkPanelToggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-        }
-    });
-}
-
-// --- Suction Bed Logic ---
-const btnSuctionMaster = document.getElementById('btnSuctionMaster');
-if (btnSuctionMaster) {
-    btnSuctionMaster.addEventListener('click', () => {
-        const isActive = btnSuctionMaster.dataset.active === 'true';
-        if (isActive) {
-            btnSuctionMaster.dataset.active = 'false';
-            btnSuctionMaster.textContent = 'OFF';
-            btnSuctionMaster.classList.remove('active');
-            connection.send('vacuum master 0');
-        } else {
-            btnSuctionMaster.dataset.active = 'true';
-            btnSuctionMaster.textContent = 'ON';
-            btnSuctionMaster.classList.add('active');
-            connection.send('vacuum master 1');
-        }
-    });
-}
-
-document.querySelectorAll('.suction-zone-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const zone = btn.dataset.zone;
-        const isActive = btn.classList.contains('active');
-        if (isActive) {
-            btn.classList.remove('active');
-            connection.send(`vacuum zone ${zone} 0`);
-        } else {
-            btn.classList.add('active');
-            connection.send(`vacuum zone ${zone} 1`);
-        }
-    });
-});
-
-// --- Gantry Parking Logic ---
-const btnParkHome = document.getElementById('btnParkHome');
-if (btnParkHome) {
-    btnParkHome.addEventListener('click', () => {
-        log('Moving gantry to Home (0,0)...', 'info');
-        // Command to move all axis to absolute zero
-        connection.send('move 1 0 10000');
-        connection.send('move 2 0 10000');
-        connection.send('move 3 0 10000');
-        connection.send('move 4 0 10000');
-    });
-}
-
-const btnParkSwap = document.getElementById('btnParkSwap');
-if (btnParkSwap) {
-    btnParkSwap.addEventListener('click', () => {
-        log('Moving gantry to Tool Swap Position...', 'info');
-        connection.send('move 1 0 10000');
-    });
-}
-
-const btnParkClear = document.getElementById('btnParkClear');
-if (btnParkClear) {
-    btnParkClear.addEventListener('click', () => {
-        log('Clearing bed position...', 'info');
-        connection.send('move 1 100000 10000');
-        connection.send('move 2 100000 10000');
-    });
-}
 
 // --- File Handling Setup ---
 
@@ -543,6 +761,10 @@ function onGCodeReady(newGCode, stepsPerMM = 1.0) {
     editor.value = newGCode;
     state.wasInterrupted = false; // Reset interruption flag on new file
     state.lastSentCmd = null; // Clear last known position
+    
+    // Automatically calculate bed zones where shapes are active
+    state.suctionAutoActiveZones = calculateActiveZones(newGCode);
+    updateSuctionUI();
     
     // Enable start button if connected or in simulation mode
     const isSim = document.getElementById('simModeCheckbox')?.checked;
@@ -602,6 +824,41 @@ const drawBridge = {
     }
 };
 
+// Add listener for Method Toggle
+document.querySelectorAll('.method-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        const method = e.currentTarget.dataset.value;
+        
+        // Update UI active state
+        document.querySelectorAll('.method-toggle-btn').forEach(b => b.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        
+        // Update hidden input for compatibility
+        const hiddenInput = document.getElementById('drawShapeMethod');
+        if (hiddenInput) hiddenInput.value = method;
+
+        if (canvasEditor) canvasEditor.setCurrentMethod(method);
+    });
+});
+
+// Add listener for Method Popup
+document.querySelectorAll('#methodPopup .btn-action').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        const method = e.currentTarget.dataset.method;
+        document.getElementById('methodPopup').classList.add('hidden');
+        if (canvasEditor) {
+            canvasEditor.setCurrentMethod(method);
+            
+            const hiddenInput = document.getElementById('drawShapeMethod');
+            if (hiddenInput) hiddenInput.value = method;
+            
+            document.querySelectorAll('.method-toggle-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.value === method);
+            });
+        }
+    });
+});
+
 
 // Keyboard shortcuts for tools (only when draw panel is visible)
 window.addEventListener('keydown', e => {
@@ -651,16 +908,6 @@ if (drawEraserInput) {
     });
 }
 
-// Shape Method Selector
-const drawShapeMethodSelect = document.getElementById('drawShapeMethod');
-if (drawShapeMethodSelect) {
-    drawShapeMethodSelect.addEventListener('change', () => {
-        if (canvasEditor) {
-            canvasEditor.setCurrentMethod(drawShapeMethodSelect.value);
-        }
-    });
-}
-
 // Clear All
 document.getElementById('btnDrawClear')?.addEventListener('click', () => {
     if (canvasEditor) {
@@ -670,17 +917,21 @@ document.getElementById('btnDrawClear')?.addEventListener('click', () => {
     }
 });
 
+// Skeletonize
+document.getElementById('btnDrawSkeletonize')?.addEventListener('click', () => {
+    if (canvasEditor) {
+        log('Skeletonizing drawn shapes...', 'info');
+        canvasEditor.skeletonize();
+        log('Skeletonization complete.', 'success');
+    }
+});
+
 // Undo
 document.getElementById('btnDrawUndo')?.addEventListener('click', () => {
     if (canvasEditor && canvasEditor.shapes.length > 0) {
         canvasEditor.shapes.pop();
         canvasEditor.draw();
     }
-});
-
-// Import SVG - Show alert for now since full visual editing is not implemented
-document.getElementById('btnDrawImport')?.addEventListener('click', () => {
-    alert("Visual editing of imported SVGs is not fully supported in the Draw tab yet.\nPlease drag and drop your SVG into the Trajectory Preview tab directly to generate paths.");
 });
 
 // Send to Cutter – export drawn shapes as SVG and push through handleFile
@@ -755,59 +1006,83 @@ function setupUrumiCamPushListener() {
         });
         
         socket.on('import_svg_in_cutter', async (data) => {
-            log("[UrumiCam Bridge] Received real-time SVG push from UrumiCam!", "success");
+            log("[UrumiCam Bridge] Received real-time push from UrumiCam! Tracing skeleton...", "info");
             
             try {
-                if (data && data.error) {
-                    throw new Error(data.error);
+                if (data && data.error) throw new Error(data.error);
+
+                // Fetch the true binary mask to skeletonize (ink=white, paper=black)
+                const imgUrl = `${serverUrl}/uploads/rectified_mask.png?t=${Date.now()}`;
+                const img = new Image();
+                img.crossOrigin = "Anonymous";
+                
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = () => reject(new Error("Failed to load rectified_mask.png"));
+                    img.src = imgUrl;
+                });
+
+                if (!window.TraceSkeleton) {
+                    throw new Error("TraceSkeleton library not loaded");
+                }
+
+                // Draw to offscreen canvas to get ImageData
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = img.width;
+                offCanvas.height = img.height;
+                const ctx = offCanvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+
+                const imgData = ctx.getImageData(0, 0, img.width, img.height);
+
+                // Tracing algorithm expects a flat binary array
+                const o = imgData.data;
+                const a = new Array(img.width * img.height);
+                for(let i=0, j=0; i<o.length; i+=4, j++) {
+                    a[j] = o[i] > 127 ? 1 : 0; 
                 }
                 
-                let svgText = data ? data.svg_text : null;
+                // trace(data, width, height, chunk_size)
+                // We use chunk_size=2 instead of Lingdong's default 10 to preserve fine curves and accurate shapes
+                const result = window.TraceSkeleton.trace(a, img.width, img.height, 2);
                 
-                // Fallback if svg_text is not provided inline (e.g. server hasn't been restarted yet)
-                if (!svgText) {
-                    log("SVG not sent inline. Falling back to HTTP fetch...", "info");
-                    const svgUrl = `${serverUrl}/uploads/rectified_edges.svg?t=${Date.now()}`;
-                    const res = await fetch(svgUrl);
-                    if (!res.ok) throw new Error("SVG vector payload missing and fallback fetch failed.");
-                    svgText = await res.text();
-                }
-                
-                const virtualFile = new File([svgText], "rectified_edges.svg", { type: "image/svg+xml" });
-                
-                let urumiMeta = null;
-                if (data && data.dots_per_mm) {
-                    urumiMeta = {
-                        dots_per_mm: data.dots_per_mm,
-                        physical_width: data.physical_width,
-                        physical_height: data.physical_height
-                    };
-                } else {
-                    try {
-                        const metaRes = await fetch(`${serverUrl}/uploads/metadata.json?t=${Date.now()}`);
-                        if (metaRes.ok) {
-                            const meta = await metaRes.json();
-                            urumiMeta = {
-                                dots_per_mm: meta.dots_per_mm,
-                                physical_width: meta.physical_width,
-                                physical_height: meta.physical_height
-                            };
-                        }
-                    } catch (err) {
-                        // Fallback gracefully to default scaling if metadata is unavailable
+                // Build SVG string from polylines
+                let pathD = "";
+                for (const poly of result.polylines) {
+                    if (poly.length < 2) continue;
+                    pathD += `M ${poly[0][0]},${poly[0][1]} `;
+                    for (let i = 1; i < poly.length; i++) {
+                        pathD += `L ${poly[i][0]},${poly[i][1]} `;
                     }
                 }
 
-                log("Importing boundary into SvgConverter...", "info");
+                const svgText = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${img.width} ${img.height}" width="${img.width}px" height="${img.height}px">
+                    <path d="${pathD}" fill="none" stroke="#3b82f6" stroke-width="2" vector-effect="non-scaling-stroke" data-method="thru_cut"/>
+                </svg>`;
+
+                const virtualFile = new File([svgText], "skeleton_trace.svg", { type: "image/svg+xml" });
+                
+                let urumiMeta = null;
+                try {
+                    const metaRes = await fetch(`${serverUrl}/uploads/metadata.json?t=${Date.now()}`);
+                    if (metaRes.ok) {
+                        const meta = await metaRes.json();
+                        urumiMeta = {
+                            dots_per_mm: meta.dots_per_mm,
+                            physical_width: meta.physical_width,
+                            physical_height: meta.physical_height
+                        };
+                    }
+                } catch (err) {}
+
+                log(`Skeletonization complete: Extracted ${result.polylines.length} polylines.`, "success");
                 handleFile(virtualFile, onGCodeReady, window.switchTab, urumiMeta);
                 
-                // Switch active tab to GCode Preview (Trajectory Preview)
                 if (window.switchTab) {
                     window.switchTab('gcode-preview');
                 }
-                log("Workpiece vectors imported successfully from UrumiCam!", "success");
             } catch (e) {
-                log(`Workpiece Import Failed: ${e.message}`, "error");
+                log(`Skeletonization Failed: ${e.message}`, "error");
             }
         });
     });
@@ -923,49 +1198,6 @@ const closeModal = () => {
 };
 
 btnCloseModal.addEventListener('click', closeModal);
-
-// Method Selection Popup Logic
-const methodPopup = document.getElementById('methodPopup');
-let targetShapeId = null;
-
-const gcodeCanvas = document.getElementById('gcodeCanvas');
-if (gcodeCanvas) {
-    gcodeCanvas.addEventListener('shapeClicked', (e) => {
-        targetShapeId = e.detail.shapeId;
-        methodPopup.style.left = e.detail.clientX + 'px';
-        methodPopup.style.top = e.detail.clientY + 'px';
-        methodPopup.classList.remove('hidden');
-    });
-}
-
-// Hide popup if clicked elsewhere
-document.addEventListener('click', (e) => {
-    if (e.target !== gcodeCanvas && !methodPopup.contains(e.target) && !e.target.closest('.method-btn')) {
-        methodPopup.classList.add('hidden');
-    }
-});
-
-document.querySelectorAll('.method-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const newMethod = btn.dataset.method;
-        if (targetShapeId && state.gcode) {
-            // Replace the method in gcode
-            const regex = new RegExp(`(; SHAPE_START id=${targetShapeId} method=)[\\w_]+`, 'g');
-            state.gcode = state.gcode.replace(regex, `$1${newMethod}`);
-            editor.value = state.gcode;
-            renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM);
-        }
-        
-        // Also update CanvasEditor if active
-        if (canvasEditor && canvasEditor._sel.length > 0) {
-            canvasEditor.setShapeMethod(newMethod);
-            // It will trigger _emitChange which regenerates GCode
-        }
-        
-        methodPopup.classList.add('hidden');
-    });
-});
-
 configModal.addEventListener('click', (e) => {
     if (e.target === configModal) closeModal();
 });
@@ -1192,3 +1424,270 @@ function handleJogKey(e) {
         keyMap[e.key]();
     }
 }
+
+// ============================================================
+//  SUCTION BED CONTROL LOGIC
+// ============================================================
+
+/**
+ * Recalculates the active zones based on drawn paths or G-code commands.
+ * Splits the machine bed (bedW x bedH) into a 2x3 grid.
+ *
+ * @param {string} gcode - Raw G-code or Trajectory queue text.
+ * @returns {Array<number>} List of active zone IDs (1-6).
+ */
+function calculateActiveZones(gcode) {
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+    
+    if (!gcode) return [];
+    
+    const lines = gcode.split('\n');
+    let cur = { x: 0, y: 0 };
+    let isPenDown = false;
+    
+    const active = new Set();
+    
+    const addZone = (x, y) => {
+        // Clamp bounds to prevent array index overflow
+        const cx = Math.max(0, Math.min(bedW - 0.001, x));
+        const cy = Math.max(0, Math.min(bedH - 0.001, y));
+        
+        const col = Math.floor(cx / (bedW / 3)); // 0 to 2
+        const row = cy >= (bedH / 2) ? 0 : 1;    // Row 0 is Top, Row 1 is Bottom
+        
+        let zoneNum = 1;
+        if (row === 0) {
+            zoneNum = col + 1; // 1, 2, 3
+        } else {
+            zoneNum = col + 4; // 4, 5, 6
+        }
+        active.add(zoneNum);
+    };
+
+    const getAxisSteps = (mId, miId, dId, fallback) => {
+        const m  = parseFloat(document.getElementById(mId)?.value)  || 200;
+        const mi = parseFloat(document.getElementById(miId)?.value) || 1;
+        const d  = parseFloat(document.getElementById(dId)?.value)  || 1;
+        const v  = (m * mi) / d;
+        return (isNaN(v) || v <= 0) ? fallback : v;
+    };
+
+    const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
+    const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
+    const idZ = parseInt(document.getElementById('zRs485Id')?.value) || 1;
+
+    const xStepsPerMM = getAxisSteps('xMotorSteps', 'xMicrosteps', 'xMmPerRev', 160);
+    const yStepsPerMM = getAxisSteps('yMotorSteps', 'yMicrosteps', 'yMmPerRev', 160);
+
+    lines.forEach(line => {
+        line = line.split(';')[0].trim().toUpperCase();
+        if (!line) return;
+
+        if (line.startsWith('MOVE')) {
+            const parts = line.split(/[\s,]+/);
+            const count = parseInt(parts[1]);
+            if (isNaN(count) || parts.length < 2 + count * 2) return;
+            
+            let dx = 0, dy = 0, zVal = 0;
+            for (let i = 0; i < count; i++) {
+                const id = parseInt(parts[2 + i]);
+                const steps = parseInt(parts[2 + count + i]);
+                
+                if (id === idX) dx = steps / xStepsPerMM;
+                else if (id === idY) dy = steps / yStepsPerMM;
+                else if (id === idZ) zVal = steps;
+            }
+            
+            if (zVal > 0) isPenDown = true;
+            else if (zVal < 0) isPenDown = false;
+            
+            const next = { x: cur.x + dx, y: cur.y + dy };
+            
+            if (isPenDown) {
+                addZone(cur.x, cur.y);
+                addZone(next.x, next.y);
+                addZone((cur.x + next.x) / 2, (cur.y + next.y) / 2);
+            }
+            cur = next;
+            return;
+        }
+
+        const isMove = line.startsWith('G0') || line.startsWith('G1');
+        if (isMove) {
+            const xMatch = line.match(/X([-+]?\d*\.?\d+)/);
+            const yMatch = line.match(/Y([-+]?\d*\.?\d+)/);
+            
+            const next = { ...cur };
+            if (xMatch) next.x = parseFloat(xMatch[1]);
+            if (yMatch) next.y = parseFloat(yMatch[1]);
+            
+            const isCut = line.startsWith('G1');
+            if (isCut) {
+                addZone(cur.x, cur.y);
+                addZone(next.x, next.y);
+                addZone((cur.x + next.x) / 2, (cur.y + next.y) / 2);
+            }
+            cur = next;
+        }
+    });
+
+    return Array.from(active);
+}
+
+/**
+ * Synchronizes the suction panel UI state with the current global controller state.
+ */
+function updateSuctionUI() {
+    const slider = document.getElementById('suctionThrottleSlider');
+    const numInput = document.getElementById('suctionThrottleInput');
+    const throttleVal = document.getElementById('suctionThrottleVal');
+    const autoBtn = document.getElementById('btnSuctionModeAuto');
+    const manualBtn = document.getElementById('btnSuctionModeManual');
+    const statusText = document.getElementById('suctionStatusText');
+    const fanIcon = document.getElementById('suctionFanIcon');
+    const cells = document.querySelectorAll('.suction-cell');
+
+    // Update Slider / Inputs
+    if (slider) slider.value = state.suctionThrottle;
+    if (numInput) numInput.value = state.suctionThrottle;
+    if (throttleVal) throttleVal.textContent = `${state.suctionThrottle}%`;
+
+    // Toggle active state classes for pills
+    if (autoBtn && manualBtn) {
+        if (state.suctionMode === 'auto') {
+            autoBtn.classList.add('active');
+            manualBtn.classList.remove('active');
+        } else {
+            autoBtn.classList.remove('active');
+            manualBtn.classList.add('active');
+        }
+    }
+
+    // Identify active zones based on current mode
+    const activeList = state.suctionMode === 'auto' ? state.suctionAutoActiveZones : state.suctionZones.map((z, idx) => z ? (idx + 1) : null).filter(z => z !== null);
+
+    // Sync individual cells in the 2x3 bed visualizer grid
+    cells.forEach(cell => {
+        const zoneNum = parseInt(cell.dataset.zone);
+        if (activeList.includes(zoneNum)) {
+            cell.classList.add('active');
+        } else {
+            cell.classList.remove('active');
+        }
+    });
+
+    // We consider the physical suction system active if there are selected zones, throttle is above 0,
+    // and we're either streaming a job (auto) or manually testing (manual)
+    const isRunning = (state.isSending || state.suctionMode === 'manual') && activeList.length > 0 && state.suctionThrottle > 0;
+    
+    // Status text update
+    if (statusText) {
+        if (isRunning) {
+            statusText.textContent = 'ON';
+            statusText.className = 'suction-status-active';
+        } else {
+            statusText.textContent = 'OFF';
+            statusText.className = 'suction-status-idle';
+        }
+    }
+
+    // Fan micro-animation state
+    if (fanIcon) {
+        if (isRunning) {
+            fanIcon.classList.add('spinning');
+        } else {
+            fanIcon.classList.remove('spinning');
+        }
+    }
+}
+
+/**
+ * Formats and transmits current suction status to the connected hardware over WebSerial/Pico.
+ */
+function sendSuctionCommands() {
+    if (!connection.connected) return;
+    
+    const activeList = state.suctionMode === 'auto' ? state.suctionAutoActiveZones : state.suctionZones.map((z, idx) => z ? (idx + 1) : null).filter(z => z !== null);
+    
+    // Reconstruct 6-channel binary array for active relays
+    const zMask = [0, 0, 0, 0, 0, 0];
+    activeList.forEach(z => {
+        if (z >= 1 && z <= 6) zMask[z - 1] = 1;
+    });
+
+    const isRunning = (state.isSending || state.suctionMode === 'manual') && activeList.length > 0;
+    const speed = isRunning ? state.suctionThrottle : 0;
+
+    // Send UART commands
+    connection.send(`suction zones ${zMask.join(' ')}`, true);
+    connection.send(`suction speed ${speed}`, true);
+}
+
+/**
+ * Initializes and registers event listeners for the suction control UI panel elements.
+ */
+function initSuctionBed() {
+    const slider = document.getElementById('suctionThrottleSlider');
+    const numInput = document.getElementById('suctionThrottleInput');
+    const autoBtn = document.getElementById('btnSuctionModeAuto');
+    const manualBtn = document.getElementById('btnSuctionModeManual');
+    const cells = document.querySelectorAll('.suction-cell');
+
+    if (slider && numInput) {
+        const updateThrottle = (val) => {
+            state.suctionThrottle = Math.max(0, Math.min(100, parseInt(val) || 0));
+            updateSuctionUI();
+            sendSuctionCommands();
+        };
+        slider.addEventListener('input', (e) => updateThrottle(e.target.value));
+        numInput.addEventListener('change', (e) => updateThrottle(e.target.value));
+    }
+
+    if (autoBtn && manualBtn) {
+        autoBtn.addEventListener('click', () => {
+            state.suctionMode = 'auto';
+            updateSuctionUI();
+            sendSuctionCommands();
+            log('Suction Bed: Switched to Automatic (Drawing-Based) Mode.', 'info');
+        });
+        manualBtn.addEventListener('click', () => {
+            state.suctionMode = 'manual';
+            // Pre-seed manual zones with current auto zones
+            state.suctionZones = [false, false, false, false, false, false];
+            state.suctionAutoActiveZones.forEach(z => {
+                if (z >= 1 && z <= 6) state.suctionZones[z - 1] = true;
+            });
+            updateSuctionUI();
+            sendSuctionCommands();
+            log('Suction Bed: Switched to Manual Override Mode.', 'info');
+        });
+    }
+
+    cells.forEach(cell => {
+        cell.addEventListener('click', () => {
+            const zoneNum = parseInt(cell.dataset.zone);
+            if (isNaN(zoneNum) || zoneNum < 1 || zoneNum > 6) return;
+
+            if (state.suctionMode === 'auto') {
+                state.suctionMode = 'manual';
+                // Clone calculated zones to manual array for clean starting point override
+                state.suctionZones = [false, false, false, false, false, false];
+                state.suctionAutoActiveZones.forEach(z => {
+                    if (z >= 1 && z <= 6) state.suctionZones[z - 1] = true;
+                });
+                log('Suction Bed: Clicking cell switched system to Manual override.', 'info');
+            }
+
+            state.suctionZones[zoneNum - 1] = !state.suctionZones[zoneNum - 1];
+            updateSuctionUI();
+            sendSuctionCommands();
+        });
+    });
+
+    // Run the initial UI sync
+    updateSuctionUI();
+}
+
+// Kickstart the suction bed subsystem
+initSuctionBed();

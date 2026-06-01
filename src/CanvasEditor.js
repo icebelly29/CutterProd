@@ -31,6 +31,8 @@
  * ============================================================================
  */
 
+import SvgConverter from './SvgConverter.js';
+
 // ─── Shape Types ──────────────────────────────────────────────────────────────
 
 let _nextId = 1;
@@ -1065,5 +1067,94 @@ ${paths}
 
     _emitChange() {
         this.canvas.dispatchEvent(new CustomEvent('editor:changed', { bubbles: true }));
+    }
+
+    skeletonize() {
+        if (!window.TraceSkeleton) {
+            console.error("TraceSkeleton library not loaded");
+            return;
+        }
+
+        const resolution = 2; // px per mm
+        const w = Math.round(this.view.bedW * resolution);
+        const h = Math.round(this.view.bedH * resolution);
+        
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = w;
+        offCanvas.height = h;
+        const ctx = offCanvas.getContext('2d');
+        
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        const mapX = x => x * resolution;
+        const mapY = y => (this.view.bedH - y) * resolution; // machine Y is up
+        
+        for (const shape of this.shapes) {
+            ctx.beginPath();
+            ctx.lineWidth = Math.max(1, shape.strokeWidth * resolution);
+            
+            switch (shape.type) {
+                case 'pencil':
+                    if (shape.points.length < 2) break;
+                    ctx.moveTo(mapX(shape.points[0].x), mapY(shape.points[0].y));
+                    for (let i = 1; i < shape.points.length; i++) {
+                        ctx.lineTo(mapX(shape.points[i].x), mapY(shape.points[i].y));
+                    }
+                    ctx.stroke();
+                    break;
+                case 'line':
+                    ctx.moveTo(mapX(shape.x1), mapY(shape.y1));
+                    ctx.lineTo(mapX(shape.x2), mapY(shape.y2));
+                    ctx.stroke();
+                    break;
+                case 'rect':
+                    ctx.rect(mapX(shape.x), mapY(shape.y + shape.h), shape.w * resolution, shape.h * resolution);
+                    ctx.fill();
+                    ctx.stroke();
+                    break;
+                case 'circle':
+                    ctx.ellipse(mapX(shape.cx), mapY(shape.cy), shape.rx * resolution, shape.ry * resolution, 0, 0, 2 * Math.PI);
+                    ctx.fill();
+                    ctx.stroke();
+                    break;
+                case 'bezier':
+                    ctx.moveTo(mapX(shape.x1), mapY(shape.y1));
+                    ctx.bezierCurveTo(mapX(shape.cx1), mapY(shape.cy1), mapX(shape.cx2), mapY(shape.cy2), mapX(shape.x2), mapY(shape.y2));
+                    ctx.stroke();
+                    break;
+            }
+        }
+        
+        const result = window.TraceSkeleton.fromCanvas(offCanvas);
+        
+        this.shapes = [];
+        this._sel = [];
+        
+        for (const poly of result.polylines) {
+            if (poly.length < 2) continue;
+            
+            const points = poly.map(p => ({
+                x: p[0] / resolution,
+                y: this.view.bedH - (p[1] / resolution)
+            }));
+            
+            const shape = {
+                id: makeId(),
+                type: 'pencil',
+                points: points,
+                strokeWidth: 1.5,
+                method: this.currentMethod
+            };
+            this.shapes.push(shape);
+        }
+        
+        this.draw();
+        this._emitChange();
     }
 }
