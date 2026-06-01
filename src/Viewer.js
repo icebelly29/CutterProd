@@ -72,8 +72,22 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     const paths = [];
     let cur = { x: 0, y: 0 }; // Current pen position (starts at 0,0)
     let isPenDown = false; // Track pen state based on relative Z changes
+    
+    let currentShapeId = null;
+    let currentMethod = 'thru_cut';
 
     lines.forEach(line => {
+        const rawLine = line.trim();
+        if (rawLine.startsWith('; SHAPE_START')) {
+            const idMatch = rawLine.match(/id=([\w-]+)/);
+            const methodMatch = rawLine.match(/method=([\w_]+)/);
+            if (idMatch) currentShapeId = idMatch[1];
+            if (methodMatch) currentMethod = methodMatch[1];
+        } else if (rawLine.startsWith('; SHAPE_END')) {
+            currentShapeId = null;
+            currentMethod = 'thru_cut';
+        }
+
         // Remove comments (text after ';') and whitespace
         line = line.split(';')[0].trim().toUpperCase();
         if (!line) return;
@@ -127,7 +141,9 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
                 paths.push({
                     type: isMove ? 'move' : 'cut',
                     from: { ...cur },
-                    to: { ...next }
+                    to: { ...next },
+                    shapeId: currentShapeId,
+                    method: currentMethod
                 });
                 cur = next;
                 return;
@@ -174,7 +190,9 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
             paths.push({
                 type: line.startsWith('G0') ? 'move' : 'cut',
                 from: { ...cur },
-                to: { ...next }
+                to: { ...next },
+                shapeId: currentShapeId,
+                method: currentMethod
             });
             cur = next; // Update current position
         }
@@ -251,20 +269,89 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
             ctx.setLineDash([5, 5]);
             ctx.stroke();
         } else {
-            // G1: Cut Move (Pen Down) -> Emerald Green if executed, blue if pending
-            ctx.strokeStyle = isExecuted ? '#10b981' : '#3b82f6'; 
+            // G1: Cut Move (Pen Down) -> color based on method
+            let strokeColor = '#3b82f6'; // default blue
+            let dotColor = '#ff6600'; // default orange
+            
+            if (isExecuted) {
+                strokeColor = '#10b981'; // green when executed
+                dotColor = '#10b981';
+            } else {
+                if (p.method === 'crease') {
+                    strokeColor = '#f59e0b'; // amber/orange for crease
+                    dotColor = '#d97706';
+                } else if (p.method === 'off_base') {
+                    strokeColor = '#8b5cf6'; // purple for off base
+                    dotColor = '#7c3aed';
+                } else {
+                    strokeColor = '#3b82f6'; // blue for thru cut
+                    dotColor = '#2563eb';
+                }
+            }
+
+            ctx.strokeStyle = strokeColor; 
             ctx.lineWidth = isExecuted ? 3 : 2;
             ctx.setLineDash([]);
             ctx.stroke();
 
             // VISUALIZE SAMPLING POINTS
-            // Color: Bright Emerald Green if executed, Orange if pending
-            ctx.fillStyle = isExecuted ? '#10b981' : '#ff6600'; 
+            ctx.fillStyle = dotColor; 
             ctx.beginPath();
             ctx.arc(endX, endY, isExecuted ? 2.0 : 3.0, 0, 2 * Math.PI);
             ctx.fill();
         }
     });
+
+    // --- Interactive Selection (Click to select shape) ---
+    // Remove old listener if exists
+    if (canvas._clickHandler) {
+        canvas.removeEventListener('click', canvas._clickHandler);
+    }
+    
+    canvas._clickHandler = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        
+        // Point-to-segment distance helper
+        const distToSegmentSq = (px, py, x1, y1, x2, y2) => {
+            const l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+            if (l2 === 0) return (px - x1) * (px - x1) + (py - y1) * (py - y1);
+            let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            const projX = x1 + t * (x2 - x1);
+            const projY = y1 + t * (y2 - y1);
+            return (px - projX) * (px - projX) + (py - projY) * (py - projY);
+        };
+
+        const hitRadiusSq = 100; // 10px radius
+        let clickedPath = null;
+        let minDistSq = Infinity;
+
+        for (const p of paths) {
+            if (p.type === 'cut' && p.shapeId) {
+                const startX = mapX(p.from.x);
+                const startY = mapY(p.from.y);
+                const endX = mapX(p.to.x);
+                const endY = mapY(p.to.y);
+                
+                const dSq = distToSegmentSq(mouseX, mouseY, startX, startY, endX, endY);
+                if (dSq < hitRadiusSq && dSq < minDistSq) {
+                    minDistSq = dSq;
+                    clickedPath = p;
+                }
+            }
+        }
+
+        if (clickedPath) {
+            const event = new CustomEvent('shapeClicked', { 
+                detail: { shapeId: clickedPath.shapeId, method: clickedPath.method } 
+            });
+            canvas.dispatchEvent(event);
+        }
+    };
+    
+    canvas.addEventListener('click', canvas._clickHandler);
 
     // Draw Gantry Footprint
     if (paths.length > 0) {

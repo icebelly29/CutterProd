@@ -286,6 +286,8 @@ class SvgConverter {
             machineA: 0
         };
 
+        let validElements = [];
+
         elements.forEach((el, index) => {
             if (el.closest('defs, clipPath, mask, symbol, marker, pattern')) return;
 
@@ -310,9 +312,33 @@ class SvgConverter {
                 const matchesSize = (Math.abs(w - pageW) < 1.0) && (Math.abs(h - pageH) < 1.0);
                 const isAtOrigin = (Math.abs(x) < 1.0) && (Math.abs(y) < 1.0);
                 
-                if (matchesSize && isAtOrigin) {
-                    return; 
-                }
+                if (matchesSize && isAtOrigin) return; 
+            }
+            
+            validElements.push({ el, originalIndex: index });
+        });
+
+        // Sort elements: crease shapes first
+        validElements.sort((a, b) => {
+            const methodA = a.el.getAttribute('data-method') || 'thru_cut';
+            const methodB = b.el.getAttribute('data-method') || 'thru_cut';
+            if (methodA === 'crease' && methodB !== 'crease') return -1;
+            if (methodA !== 'crease' && methodB === 'crease') return 1;
+            return a.originalIndex - b.originalIndex;
+        });
+
+        const hasCrease = validElements.some(v => (v.el.getAttribute('data-method') || 'thru_cut') === 'crease');
+        const hasCut = validElements.some(v => (v.el.getAttribute('data-method') || 'thru_cut') !== 'crease');
+        let injectedToolChange = false;
+
+        validElements.forEach(({ el, originalIndex }) => {
+            const method = el.getAttribute('data-method') || 'thru_cut';
+
+            // Inject tool change pause if transitioning from crease to cut
+            if (!injectedToolChange && hasCrease && hasCut && method !== 'crease') {
+                data.push('; --- TOOL CHANGE ---');
+                data.push('PAUSE_FOR_TOOL_CHANGE');
+                injectedToolChange = true;
             }
 
             let offsetX = 0;
@@ -343,8 +369,12 @@ class SvgConverter {
                 });
             }
 
-            const shapeData = this.generateTrajectory(commands, state);
+            const shapeId = `shape_${originalIndex}`;
+            data.push(`; SHAPE_START id=${shapeId} method=${method}`);
+            
+            const shapeData = this.generateTrajectory(commands, state, method);
             data.push(...shapeData);
+            data.push(`; SHAPE_END`);
         });
         
     } else {
@@ -357,12 +387,39 @@ class SvgConverter {
         };
         const pathRegex = /<path[^>]*\bd=[\"']([^\"']+)["']/gi;
         let match;
+        let validElements = [];
+        let index = 0;
         while ((match = pathRegex.exec(svgContent)) !== null) {
           const d = match[1];
-          const commands = this.parsePathData(d);
-          const shapeData = this.generateTrajectory(commands, state);
-          data.push(...shapeData);
+          const methodMatch = match[0].match(/data-method=[\"']([^\"']+)["']/i);
+          const method = methodMatch ? methodMatch[1] : 'thru_cut';
+          validElements.push({ d, method, originalIndex: index++ });
         }
+
+        // Sort: crease first
+        validElements.sort((a, b) => {
+            if (a.method === 'crease' && b.method !== 'crease') return -1;
+            if (a.method !== 'crease' && b.method === 'crease') return 1;
+            return a.originalIndex - b.originalIndex;
+        });
+
+        const hasCrease = validElements.some(v => v.method === 'crease');
+        const hasCut = validElements.some(v => v.method !== 'crease');
+        let injectedToolChange = false;
+
+        validElements.forEach(v => {
+            if (!injectedToolChange && hasCrease && hasCut && v.method !== 'crease') {
+                data.push('; --- TOOL CHANGE ---');
+                data.push('PAUSE_FOR_TOOL_CHANGE');
+                injectedToolChange = true;
+            }
+
+            const commands = this.parsePathData(v.d);
+            data.push(`; SHAPE_START id=path_${v.originalIndex} method=${v.method}`);
+            const shapeData = this.generateTrajectory(commands, state, v.method);
+            data.push(...shapeData);
+            data.push(`; SHAPE_END`);
+        });
     }
 
     return data.join('\n');
@@ -515,14 +572,20 @@ class SvgConverter {
    * @method generateTrajectory
    * @description Converts parsed SVG commands into Trajectory CSV lines.
    * @param {Array} commands - List of parsed commands.
+   * @param {Object} state - The machine state.
+   * @param {string} method - The shape cutting method (crease, thru_cut, off_base).
    * @returns {Array} Array of CSV data lines.
    */
-  generateTrajectory(commands, state = null) {
+  generateTrajectory(commands, state = null, method = 'thru_cut') {
     const data = [];
     let cur = new Vector2(0, 0);
     let start = new Vector2(0, 0); 
     let lastControl = new Vector2(0, 0);
     let lastCmdType = '';
+    
+    // Determine target Z based on method
+    // zDown is the base depth. off_base should be slightly higher.
+    const targetZDown = method === 'off_base' ? this.zDown + 1 : this.zDown;
 
     if (!state) {
         state = {
@@ -795,17 +858,17 @@ class SvgConverter {
       };
 
       // Handle Plunge/Lift & Tangential knife sharp corners
-      if (!state.isPenDown && z === this.zDown) {
+      if (!state.isPenDown && z !== this.zUp) {
           // Orient (rotation only, no Z move yet)
           pushLine(state.machineX, state.machineY, this.zUp, 0, 0, 0, targetA);
-          // Plunge: positive Vz = downward
-          pushLine(state.machineX, state.machineY, this.zDown, 0, 0, this.feedRate, targetA);
+          // Plunge
+          pushLine(state.machineX, state.machineY, z, 0, 0, this.feedRate, targetA);
           state.isPenDown = true;
-      } else if (state.isPenDown && Math.abs(diff) > this.angleThreshold && z === this.zDown) {
-          // Sharp corner: lift, rotate, plunge
+      } else if (state.isPenDown && Math.abs(diff) > this.angleThreshold && z !== this.zUp) {
+          // Lift, Orient, Plunge sequence for sharp corners
           pushLine(state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate, state.machineA);
-          pushLine(state.machineX, state.machineY, this.zUp, 0, 0,              0, targetA);
-          pushLine(state.machineX, state.machineY, this.zDown, 0, 0,  this.feedRate, targetA);
+          pushLine(state.machineX, state.machineY, this.zUp, 0, 0, 0, targetA);
+          pushLine(state.machineX, state.machineY, z, 0, 0, this.feedRate, targetA);
       }
 
       // Purely Z-up moves should keep current orientation
@@ -817,6 +880,8 @@ class SvgConverter {
       // Output scaled steps for the target point
       pushLine(x, y, z, vx, vy, vz, targetA);
   }
+
+
 
   /**
    * @method emitLineSubdivided

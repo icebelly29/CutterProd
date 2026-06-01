@@ -37,19 +37,19 @@ let _nextId = 1;
 function makeId() { return _nextId++; }
 
 function makePencil(points, strokeWidth) {
-    return { id: makeId(), type: 'pencil', points: [...points], strokeWidth };
+    return { id: makeId(), type: 'pencil', points: [...points], strokeWidth, method: 'thru_cut' };
 }
 function makeLine(x1, y1, x2, y2, strokeWidth) {
-    return { id: makeId(), type: 'line', x1, y1, x2, y2, strokeWidth };
+    return { id: makeId(), type: 'line', x1, y1, x2, y2, strokeWidth, method: 'thru_cut' };
 }
 function makeRect(x, y, w, h, strokeWidth) {
-    return { id: makeId(), type: 'rect', x, y, w, h, strokeWidth };
+    return { id: makeId(), type: 'rect', x, y, w, h, strokeWidth, method: 'thru_cut' };
 }
 function makeCircle(cx, cy, rx, ry, strokeWidth) {
-    return { id: makeId(), type: 'circle', cx, cy, rx, ry, strokeWidth };
+    return { id: makeId(), type: 'circle', cx, cy, rx, ry, strokeWidth, method: 'thru_cut' };
 }
 function makeBezier(x1, y1, cx1, cy1, cx2, cy2, x2, y2, strokeWidth) {
-    return { id: makeId(), type: 'bezier', x1, y1, cx1, cy1, cx2, cy2, x2, y2, strokeWidth };
+    return { id: makeId(), type: 'bezier', x1, y1, cx1, cy1, cx2, cy2, x2, y2, strokeWidth, method: 'thru_cut' };
 }
 
 // ─── SVG Path Serialisation ────────────────────────────────────────────────────
@@ -174,16 +174,15 @@ function hitTest(shape, mx, my, tol = 4) {
             return pointNearSegment(mx, my, shape.x1, shape.y1, shape.x2, shape.y2, tol);
         case 'rect': {
             const { x, y, w, h } = shape;
-            // Check all 4 sides
-            return pointNearSegment(mx, my, x, y, x+w, y, tol) ||
-                   pointNearSegment(mx, my, x+w, y, x+w, y+h, tol) ||
-                   pointNearSegment(mx, my, x+w, y+h, x, y+h, tol) ||
-                   pointNearSegment(mx, my, x, y+h, x, y, tol);
+            // Test if inside the rectangle
+            return mx >= x - tol && mx <= x + w + tol && my >= y - tol && my <= y + h + tol;
         }
         case 'circle': {
             const { cx, cy, rx, ry } = shape;
-            const d = Math.hypot((mx - cx) / rx, (my - cy) / ry);
-            return Math.abs(d - 1) < tol / Math.max(rx, ry);
+            // Test if inside the ellipse
+            const dx = (mx - cx) / (rx + tol);
+            const dy = (my - cy) / (ry + tol);
+            return dx * dx + dy * dy <= 1;
         }
         case 'bezier': {
             // Sample the bezier curve and test proximity to each segment
@@ -218,6 +217,7 @@ export class CanvasEditor {
         this.shapes   = [];
         this.tool     = 'pencil';
         this.strokeWidth = 1.5; // mm
+        this.currentMethod = 'thru_cut';
 
         // Interaction state
         this._isDown   = false;
@@ -277,11 +277,34 @@ export class CanvasEditor {
         this.canvas.style.cursor = this._cursorForTool();
         this.draw();
     }
+    
+    setCurrentMethod(method) {
+        this.currentMethod = method;
+        if (this._sel.length > 0) {
+            this.setShapeMethod(method);
+        }
+    }
+
+    _emitChange() {
+        if (this.onChange) this.onChange();
+    }
 
     setStrokeWidth(w) { this.strokeWidth = w; }
     setEraserRadius(r) { this.eraserRadius = r; }
 
     clearAll() { this.shapes = []; this._sel = []; this.draw(); }
+
+    setShapeMethod(method) {
+        if (this._sel.length > 0) {
+            this.shapes.forEach(s => {
+                if (this._sel.includes(s.id)) {
+                    s.method = method;
+                }
+            });
+            this.draw();
+            this._emitChange();
+        }
+    }
 
     // ── Coordinate helpers ────────────────────────────────────────────────────
 
@@ -362,6 +385,7 @@ export class CanvasEditor {
         if (this.tool === 'pencil') {
             this._draftPts = [mc];
             this._draft = makePencil(this._draftPts, this.strokeWidth);
+            this._draft.method = this.currentMethod;
             return;
         }
 
@@ -370,7 +394,9 @@ export class CanvasEditor {
             this._bezierPts.push(mc);
             if (this._bezierPts.length === 4) {
                 const [p0, c1, c2, p1] = this._bezierPts;
-                this.shapes.push(makeBezier(p0.x, p0.y, c1.x, c1.y, c2.x, c2.y, p1.x, p1.y, this.strokeWidth));
+                const bz = makeBezier(p0.x, p0.y, c1.x, c1.y, c2.x, c2.y, p1.x, p1.y, this.strokeWidth);
+                bz.method = this.currentMethod;
+                this.shapes.push(bz);
                 this._bezierPts  = [];
                 this._bezierMouse = null;
                 this._draft = null;
@@ -443,6 +469,7 @@ export class CanvasEditor {
         if (this.tool === 'pencil') {
             this._draftPts.push(mc);
             this._draft = makePencil(this._draftPts, this.strokeWidth);
+            this._draft.method = this.currentMethod;
             this.draw();
             return;
         }
@@ -479,6 +506,7 @@ export class CanvasEditor {
                     a.x, a.y, rx, ry, this.strokeWidth
                 );
             }
+            if (this._draft) this._draft.method = this.currentMethod;
             this.draw();
         }
     }
@@ -499,6 +527,12 @@ export class CanvasEditor {
                     return !(bb.x > xmax || bb.x + bb.w < xmin || bb.y > ymax || bb.y + bb.h < ymin);
                 }).map(s => s.id);
             }
+            
+            // Only emit change if we were dragging shapes
+            if (this._dragStart) {
+                this._emitChange();
+            }
+
             this._dragStart = null;
             this._shapePre  = null;
             this._marqueeStart = null;
@@ -722,10 +756,10 @@ export class CanvasEditor {
         if (isDraft) {
             ctx.strokeStyle = 'rgba(59,130,246,0.7)'; // accent blue
             ctx.setLineDash([4, 4]);
-        } else if (selected) {
-            ctx.strokeStyle = '#10b981'; // emerald selected
         } else {
-            ctx.strokeStyle = '#f97316'; // orange, same as trajectory dots
+            if (shape.method === 'crease') ctx.strokeStyle = '#f59e0b'; // amber/orange
+            else if (shape.method === 'off_base') ctx.strokeStyle = '#8b5cf6'; // purple
+            else ctx.strokeStyle = '#3b82f6'; // blue
         }
 
         ctx.beginPath();
@@ -814,9 +848,11 @@ export class CanvasEditor {
     exportAsSVG() {
         const { bedW, bedH } = this.view;
         const paths = this.shapes
-            .map(s => shapeToPathD(s, bedH))
-            .filter(d => d.length > 0)
-            .map(d => `  <path d="${d}" />`)
+            .map(s => {
+                const d = shapeToPathD(s, bedH);
+                return d.length > 0 ? `  <path d="${d}" data-method="${s.method || 'thru_cut'}" />` : '';
+            })
+            .filter(Boolean)
             .join('\n');
 
         return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bedW} ${bedH}" width="${bedW}mm" height="${bedH}mm" data-source="canvas">
@@ -877,6 +913,7 @@ ${paths}
             const d = p.getAttribute('d');
             if (!d) return;
             const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
+            const method = p.getAttribute('data-method') || 'thru_cut';
             
             const commands = converter.parsePathData(d);
             
@@ -895,8 +932,11 @@ ${paths}
 
                 if (type === 'M') {
                     if (currentPathPts.length > 0) {
-                        if (currentPathPts.length === 2) this.shapes.push(makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth));
-                        else this.shapes.push(makePencil(currentPathPts, strokeWidth));
+                        let shape;
+                        if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
+                        else shape = makePencil(currentPathPts, strokeWidth);
+                        shape.method = method;
+                        this.shapes.push(shape);
                         currentPathPts = [];
                     }
                     const pt = getPt(0);
@@ -932,8 +972,11 @@ ${paths}
                         currentPathPts.push({ x: tx(cur.x), y: fy(cur.y) });
                     }
                     if (currentPathPts.length > 0) {
-                        if (currentPathPts.length === 2) this.shapes.push(makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth));
-                        else this.shapes.push(makePencil(currentPathPts, strokeWidth));
+                        let shape;
+                        if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
+                        else shape = makePencil(currentPathPts, strokeWidth);
+                        shape.method = method;
+                        this.shapes.push(shape);
                         currentPathPts = [];
                     }
                 } else if (type === 'C' || type === 'S' || type === 'Q' || type === 'T') {
@@ -951,8 +994,11 @@ ${paths}
             });
             
             if (currentPathPts.length > 0) {
-                if (currentPathPts.length === 2) this.shapes.push(makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth));
-                else this.shapes.push(makePencil(currentPathPts, strokeWidth));
+                let shape;
+                if (currentPathPts.length === 2) shape = makeLine(currentPathPts[0].x, currentPathPts[0].y, currentPathPts[1].x, currentPathPts[1].y, strokeWidth);
+                else shape = makePencil(currentPathPts, strokeWidth);
+                shape.method = method;
+                this.shapes.push(shape);
             }
         });
 

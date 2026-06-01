@@ -225,6 +225,20 @@ function sendNextLine() {
             state.lastSentCmd = state.currentLine;
         }
 
+        if (state.currentLine === 'PAUSE_FOR_TOOL_CHANGE') {
+            log('Job Paused. Please change the tool to CUTTER.', 'warning');
+            setTimeout(() => {
+                const ready = confirm("CREASING COMPLETE!\n\nPlease replace the creasing tool with the CUTTER TOOL.\nEnsure safety before proceeding.\n\nClick OK when the tool is changed and you are ready to resume cutting.");
+                if (ready) {
+                    log('Tool changed to Cutter. Resuming job.', 'success');
+                    sendNextLine();
+                } else {
+                    stopJob();
+                }
+            }, 100);
+            return;
+        }
+
         const isSimMode = document.getElementById('simModeCheckbox')?.checked;
 
         const isMoveOrCut = state.currentLine.toLowerCase().startsWith('move') || 
@@ -428,6 +442,98 @@ editor.addEventListener('input', () => {
     state.gcode = editor.value;
 });
 
+// --- Panel Toggle Logic ---
+const suctionPanelHeader = document.getElementById('suctionPanelHeader');
+const suctionPanelBody = document.getElementById('suctionPanelBody');
+const suctionPanelToggle = document.getElementById('suctionPanelToggle');
+
+if (suctionPanelHeader && suctionPanelBody) {
+    suctionPanelHeader.addEventListener('click', () => {
+        const isHidden = suctionPanelBody.style.display === 'none';
+        suctionPanelBody.style.display = isHidden ? 'block' : 'none';
+        if (suctionPanelToggle) {
+            suctionPanelToggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+        }
+    });
+}
+
+const parkPanelHeader = document.getElementById('parkPanelHeader');
+const parkPanelBody = document.getElementById('parkPanelBody');
+const parkPanelToggle = document.getElementById('parkPanelToggle');
+
+if (parkPanelHeader && parkPanelBody) {
+    parkPanelHeader.addEventListener('click', () => {
+        const isHidden = parkPanelBody.style.display === 'none';
+        parkPanelBody.style.display = isHidden ? 'block' : 'none';
+        if (parkPanelToggle) {
+            parkPanelToggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+        }
+    });
+}
+
+// --- Suction Bed Logic ---
+const btnSuctionMaster = document.getElementById('btnSuctionMaster');
+if (btnSuctionMaster) {
+    btnSuctionMaster.addEventListener('click', () => {
+        const isActive = btnSuctionMaster.dataset.active === 'true';
+        if (isActive) {
+            btnSuctionMaster.dataset.active = 'false';
+            btnSuctionMaster.textContent = 'OFF';
+            btnSuctionMaster.classList.remove('active');
+            connection.send('vacuum master 0');
+        } else {
+            btnSuctionMaster.dataset.active = 'true';
+            btnSuctionMaster.textContent = 'ON';
+            btnSuctionMaster.classList.add('active');
+            connection.send('vacuum master 1');
+        }
+    });
+}
+
+document.querySelectorAll('.suction-zone-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const zone = btn.dataset.zone;
+        const isActive = btn.classList.contains('active');
+        if (isActive) {
+            btn.classList.remove('active');
+            connection.send(`vacuum zone ${zone} 0`);
+        } else {
+            btn.classList.add('active');
+            connection.send(`vacuum zone ${zone} 1`);
+        }
+    });
+});
+
+// --- Gantry Parking Logic ---
+const btnParkHome = document.getElementById('btnParkHome');
+if (btnParkHome) {
+    btnParkHome.addEventListener('click', () => {
+        log('Moving gantry to Home (0,0)...', 'info');
+        // Command to move all axis to absolute zero
+        connection.send('move 1 0 10000');
+        connection.send('move 2 0 10000');
+        connection.send('move 3 0 10000');
+        connection.send('move 4 0 10000');
+    });
+}
+
+const btnParkSwap = document.getElementById('btnParkSwap');
+if (btnParkSwap) {
+    btnParkSwap.addEventListener('click', () => {
+        log('Moving gantry to Tool Swap Position...', 'info');
+        connection.send('move 1 0 10000');
+    });
+}
+
+const btnParkClear = document.getElementById('btnParkClear');
+if (btnParkClear) {
+    btnParkClear.addEventListener('click', () => {
+        log('Clearing bed position...', 'info');
+        connection.send('move 1 100000 10000');
+        connection.send('move 2 100000 10000');
+    });
+}
+
 // --- File Handling Setup ---
 
 // Callback: What to do when a file is processed and ready?
@@ -545,6 +651,16 @@ if (drawEraserInput) {
     });
 }
 
+// Shape Method Selector
+const drawShapeMethodSelect = document.getElementById('drawShapeMethod');
+if (drawShapeMethodSelect) {
+    drawShapeMethodSelect.addEventListener('change', () => {
+        if (canvasEditor) {
+            canvasEditor.setCurrentMethod(drawShapeMethodSelect.value);
+        }
+    });
+}
+
 // Clear All
 document.getElementById('btnDrawClear')?.addEventListener('click', () => {
     if (canvasEditor) {
@@ -560,6 +676,11 @@ document.getElementById('btnDrawUndo')?.addEventListener('click', () => {
         canvasEditor.shapes.pop();
         canvasEditor.draw();
     }
+});
+
+// Import SVG - Show alert for now since full visual editing is not implemented
+document.getElementById('btnDrawImport')?.addEventListener('click', () => {
+    alert("Visual editing of imported SVGs is not fully supported in the Draw tab yet.\nPlease drag and drop your SVG into the Trajectory Preview tab directly to generate paths.");
 });
 
 // Send to Cutter – export drawn shapes as SVG and push through handleFile
@@ -802,6 +923,49 @@ const closeModal = () => {
 };
 
 btnCloseModal.addEventListener('click', closeModal);
+
+// Method Selection Popup Logic
+const methodPopup = document.getElementById('methodPopup');
+let targetShapeId = null;
+
+const gcodeCanvas = document.getElementById('gcodeCanvas');
+if (gcodeCanvas) {
+    gcodeCanvas.addEventListener('shapeClicked', (e) => {
+        targetShapeId = e.detail.shapeId;
+        methodPopup.style.left = e.detail.clientX + 'px';
+        methodPopup.style.top = e.detail.clientY + 'px';
+        methodPopup.classList.remove('hidden');
+    });
+}
+
+// Hide popup if clicked elsewhere
+document.addEventListener('click', (e) => {
+    if (e.target !== gcodeCanvas && !methodPopup.contains(e.target) && !e.target.closest('.method-btn')) {
+        methodPopup.classList.add('hidden');
+    }
+});
+
+document.querySelectorAll('.method-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const newMethod = btn.dataset.method;
+        if (targetShapeId && state.gcode) {
+            // Replace the method in gcode
+            const regex = new RegExp(`(; SHAPE_START id=${targetShapeId} method=)[\\w_]+`, 'g');
+            state.gcode = state.gcode.replace(regex, `$1${newMethod}`);
+            editor.value = state.gcode;
+            renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM);
+        }
+        
+        // Also update CanvasEditor if active
+        if (canvasEditor && canvasEditor._sel.length > 0) {
+            canvasEditor.setShapeMethod(newMethod);
+            // It will trigger _emitChange which regenerates GCode
+        }
+        
+        methodPopup.classList.add('hidden');
+    });
+});
+
 configModal.addEventListener('click', (e) => {
     if (e.target === configModal) closeModal();
 });

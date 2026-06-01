@@ -30,34 +30,71 @@
     </header>
 
     <main>
-        <!-- Left: Console -->
-        <section class="console-panel">
-            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Console Log</span>
-                <button id="btnClear" class="btn btn-action"
-                    style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Clear</button>
-            </div>
-            <div class="quick-actions"
-                style="display: flex; gap: 0.5rem; padding: 0.5rem; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); align-items: center; flex-wrap: wrap;">
-                <button id="btnToggleMotors" class="btn btn-action" style="font-size: 0.75rem;"
-                    data-enabled="false">Enable Motors</button>
-                <button id="btnPingAll" class="btn btn-action" style="font-size: 0.75rem;">Ping All</button>
-                <div style="display: flex; align-items: center; gap: 0.25rem;">
-                    <input type="number" id="pingNodeId" placeholder="ID"
-                        style="width: 50px; padding: 0.2rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: rgba(15, 23, 42, 0.5); color: white; outline: none;">
-                    <button id="btnPingNode" class="btn btn-action" style="font-size: 0.75rem;">Ping</button>
+        <!-- Left: Sidebar Column -->
+        <div class="sidebar-column" style="display: flex; flex-direction: column; width: 300px; border-right: 1px solid var(--border-color); background: var(--bg-primary); overflow: hidden;">
+            
+            <!-- Suction Bed Control Panel -->
+            <section class="suction-panel" style="border-bottom: 1px solid var(--border-color);">
+                <div class="panel-header" id="suctionPanelHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" title="Click to toggle">
+                    <span>Suction Bed Control</span>
+                    <svg id="suctionPanelToggle" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="transition: transform 0.3s; transform: rotate(-90deg);"><polyline points="6 9 12 15 18 9"></polyline></svg>
                 </div>
-            </div>
-            <div class="console-output" id="consoleOutput">
-                <div class="console-line log-info">System initialized...</div>
-                <div class="console-line log-info">Click 'Connect Serial' to connect to Pico.</div>
-            </div>
-            <div class="console-input-area">
-                <span class="console-prefix">&gt;</span>
-                <input type="text" id="cmdInput" placeholder="Type command..." autocomplete="off">
-                <button class="btn btn-primary" id="btnRun">Run</button>
-            </div>
-        </section>
+                <div id="suctionPanelBody" style="display: none; padding: 0.5rem; background: var(--bg-secondary);">
+                    <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;">
+                        <label style="font-size: 0.75rem;">Master Vacuum:</label>
+                        <button id="btnSuctionMaster" class="btn btn-action" style="font-size: 0.75rem; padding: 2px 5px;" data-active="false">OFF</button>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem;">
+                        <button class="btn btn-action suction-zone-btn" data-zone="1">Z1</button>
+                        <button class="btn btn-action suction-zone-btn" data-zone="2">Z2</button>
+                        <button class="btn btn-action suction-zone-btn" data-zone="3">Z3</button>
+                        <button class="btn btn-action suction-zone-btn" data-zone="4">Z4</button>
+                        <button class="btn btn-action suction-zone-btn" data-zone="5">Z5</button>
+                        <button class="btn btn-action suction-zone-btn" data-zone="6">Z6</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Gantry Parking Control -->
+            <section class="park-panel" style="border-bottom: 1px solid var(--border-color);">
+                <div class="panel-header" id="parkPanelHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" title="Click to toggle">
+                    <span>Gantry Parking</span>
+                    <svg id="parkPanelToggle" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="transition: transform 0.3s; transform: rotate(-90deg);"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+                <div id="parkPanelBody" style="display: none; padding: 0.5rem; background: var(--bg-secondary);">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button id="btnParkHome" class="btn btn-action" style="font-size: 0.75rem;">Home (0,0)</button>
+                        <button id="btnParkSwap" class="btn btn-action" style="font-size: 0.75rem;">Tool Swap Pos</button>
+                        <button id="btnParkClear" class="btn btn-action" style="font-size: 0.75rem;">Clear Bed Pos</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Console Log -->
+            <section class="console-panel" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>Console Log</span>
+                    <button id="btnClear" class="btn btn-action" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Clear</button>
+                </div>
+                <div class="quick-actions" style="display: flex; gap: 0.5rem; padding: 0.5rem; background: var(--bg-tertiary); border-bottom: 1px solid var(--border-color); align-items: center; flex-wrap: wrap;">
+                    <button id="btnToggleMotors" class="btn btn-action" style="font-size: 0.75rem;" data-enabled="false">Enable Motors</button>
+                    <button id="btnPingAll" class="btn btn-action" style="font-size: 0.75rem;">Ping All</button>
+                    <div style="display: flex; align-items: center; gap: 0.25rem;">
+                        <input type="number" id="pingNodeId" placeholder="ID" style="width: 50px; padding: 0.2rem; font-size: 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: rgba(15, 23, 42, 0.5); color: white; outline: none;">
+                        <button id="btnPingNode" class="btn btn-action" style="font-size: 0.75rem;">Ping</button>
+                    </div>
+                </div>
+                <div class="console-output" id="consoleOutput" style="flex: 1; overflow-y: auto;">
+                    <div class="console-line log-info">System initialized...</div>
+                    <div class="console-line log-info">Click 'Connect Serial' to connect to Pico.</div>
+                </div>
+                <div class="console-input-area" style="padding: 0.5rem; background: var(--bg-tertiary); display: flex; gap: 0.5rem; align-items: center;">
+                    <span class="console-prefix">&gt;</span>
+                    <input type="text" id="cmdInput" placeholder="Type command..." autocomplete="off" style="flex: 1; padding: 0.2rem; background: transparent; color: white; border: none; outline: none; font-family: monospace;">
+                    <button class="btn btn-primary" id="btnRun" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;">Run</button>
+                </div>
+            </section>
+        </div>
 
         <!-- Right: Workspace -->
         <section class="workspace-panel">
@@ -167,6 +204,14 @@
                         <label>Eraser (mm)</label>
                         <input type="number" id="drawEraserRadius" value="5" min="1" max="50" step="1"
                             style="width:60px;">
+                    </div>
+                    <div class="draw-option-group">
+                        <label>Shape Method</label>
+                        <select id="drawShapeMethod" style="width:130px; font-size: 0.8rem; padding: 2px;">
+                            <option value="thru_cut">Thru Cut (Blue)</option>
+                            <option value="off_base">Off Base Cut (Purple)</option>
+                            <option value="crease">Crease (Orange)</option>
+                        </select>
                     </div>
                     <div class="draw-palette-actions">
                         <button class="btn btn-action" id="btnDrawImport" title="Import SVG to edit">Import SVG</button>
@@ -460,6 +505,20 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Method Selection Popup -->
+    <div id="methodPopup" class="glass-panel hidden" style="position: absolute; z-index: 100; padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; min-width: 150px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);">
+        <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: bold; margin-bottom: 0.25rem; text-transform: uppercase;">Assign Method</div>
+        <button class="btn btn-action method-btn" data-method="thru_cut" style="justify-content: flex-start; color: #3b82f6; border-color: rgba(59, 130, 246, 0.3);">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#3b82f6; margin-right:6px;"></span>Thru Cut
+        </button>
+        <button class="btn btn-action method-btn" data-method="off_base" style="justify-content: flex-start; color: #8b5cf6; border-color: rgba(139, 92, 246, 0.3);">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#8b5cf6; margin-right:6px;"></span>Off Base Cut
+        </button>
+        <button class="btn btn-action method-btn" data-method="crease" style="justify-content: flex-start; color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#f59e0b; margin-right:6px;"></span>Crease
+        </button>
     </div>
 
     <script type="module" src="script.js"></script>
