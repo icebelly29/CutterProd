@@ -841,23 +841,7 @@ document.querySelectorAll('.method-toggle-btn').forEach(btn => {
     });
 });
 
-// Add listener for Method Popup
-document.querySelectorAll('#methodPopup .btn-action').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        const method = e.currentTarget.dataset.method;
-        document.getElementById('methodPopup').classList.add('hidden');
-        if (canvasEditor) {
-            canvasEditor.setCurrentMethod(method);
-            
-            const hiddenInput = document.getElementById('drawShapeMethod');
-            if (hiddenInput) hiddenInput.value = method;
-            
-            document.querySelectorAll('.method-toggle-btn').forEach(b => {
-                b.classList.toggle('active', b.dataset.value === method);
-            });
-        }
-    });
-});
+
 
 
 // Keyboard shortcuts for tools (only when draw panel is visible)
