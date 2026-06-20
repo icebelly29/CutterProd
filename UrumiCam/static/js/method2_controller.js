@@ -183,6 +183,9 @@ const Method2Controller = (() => {
                 if (currentRoi) renderWorkspace();
             });
         });
+
+        // Initialize the default tab logic (e.g. generating the QR code)
+        switchTab('method2');
     }
 
     function switchTab(method) {

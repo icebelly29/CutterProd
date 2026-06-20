@@ -195,24 +195,58 @@ def api_set_config():
 @app.route("/api/network-info", methods=["GET"])
 def api_network_info():
     import socket
-    def get_local_ip():
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    import ipaddress
+
+    def add_candidate(candidates, ip):
         try:
-            s.connect(('8.8.8.8', 80))
-            ip = s.getsockname()[0]
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return
+        if addr.version != 4 or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+            return
+        if ip not in candidates:
+            candidates.append(ip)
+
+    candidates = []
+
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        udp_socket.connect(('8.8.8.8', 80))
+        add_candidate(candidates, udp_socket.getsockname()[0])
+    except Exception:
+        pass
+    finally:
+        udp_socket.close()
+
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_DGRAM):
+            add_candidate(candidates, info[4][0])
+    except Exception:
+        pass
+
+    if not candidates:
+        candidates.append('127.0.0.1')
+
+    def candidate_rank(ip):
+        try:
+            addr = ipaddress.ip_address(ip)
+            if addr.is_private:
+                return 0
         except Exception:
-            ip = '127.0.0.1'
-        finally:
-            s.close()
-        return ip
+            pass
+        return 1
     
-    ip = get_local_ip()
+    candidates = sorted(candidates, key=candidate_rank)
+    ip = candidates[0]
     port = request.host.split(":")[1] if ":" in request.host else "5000"
-    url = f"http://{ip}:{port}/mobile.html"
+    urls = [f"http://{candidate}:{port}/mobile.html" for candidate in candidates]
+    url = urls[0]
     return jsonify({
         "ip": ip,
         "port": port,
-        "url": url
+        "url": url,
+        "urls": urls
     })
 
 @app.route("/api/method2/upload", methods=["POST"])
@@ -241,7 +275,9 @@ def api_method2_upload():
             return jsonify({"success": False, "message": "Invalid image file format"}), 400
             
         # Run ArUco rectification
-        rect_result = aruco_rectifier.process_image(img, solve_dist=True)
+        # We explicitly cap target_dpi=150 so it doesn't compute an insanely huge image
+        # if the camera was extremely close to the bed. This prevents CV filters from hanging.
+        rect_result = aruco_rectifier.process_image(img, solve_dist=True, target_dpi=150)
         
         if not rect_result["success"]:
             return jsonify({
@@ -290,24 +326,63 @@ def api_method2_upload():
             valid_contours.append(c)
         contours = valid_contours
         
-        # 4. Generate transparent overlay with custom glowing neon purple edge lines (alpha channel)
-        edge_overlay = np.zeros((h_px, w_px, 4), dtype=np.uint8)
-        # Soft outer glow (A=80)
-        cv2.drawContours(edge_overlay, contours, -1, (255, 100, 180, 80), 4, cv2.LINE_AA)
-        # Sharp inner border (A=255)
-        cv2.drawContours(edge_overlay, contours, -1, (255, 100, 180, 255), 2, cv2.LINE_AA)
-        
-        edges_path = os.path.join(uploads_dir, "rectified_edges.png")
-        cv2.imwrite(edges_path, edge_overlay)
-        logger.info(f"Generated neon-edge detection overlay: {edges_path}")
-
-        # 4a. Generate binary mask for proper skeletonization (ink=white, paper=black)
-        # 61 block size prevents most hollowing, C=5 is more sensitive to faint ink than C=10
-        binary_mask = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 5)
+        # 4a. Generate a dark-stroke mask for skeletonization (ink=white, paper=black).
+        # A black-hat transform suppresses the paper grain and broad shading that were
+        # causing the adaptive threshold to light up as thousands of tiny specks.
+        blackhat = cv2.morphologyEx(
+            blurred,
+            cv2.MORPH_BLACKHAT,
+            np.ones((15, 15), np.uint8)
+        )
+        otsu_threshold, _ = cv2.threshold(
+            blackhat,
+            0,
+            255,
+            cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        tuned_threshold = max(1, int(round(otsu_threshold * 0.9)))
+        _, binary_mask = cv2.threshold(
+            blackhat,
+            tuned_threshold,
+            255,
+            cv2.THRESH_BINARY
+        )
+        hsv_for_mask = cv2.cvtColor(rect_result["image"], cv2.COLOR_BGR2HSV)
+        colored_ink_mask = cv2.inRange(
+            hsv_for_mask,
+            np.array([0, 38, 0], dtype=np.uint8),
+            np.array([179, 255, 248], dtype=np.uint8)
+        )
+        binary_mask = cv2.bitwise_or(binary_mask, colored_ink_mask)
 
         # Clear out the border edges (ArUco frame) so it isn't skeletonized.
         # The ArUco markers and frame typically take up 4-5% of the image edge.
         mask_edge_margin = max(10, int(0.05 * min(w_px, h_px)))
+        binary_mask[0:mask_edge_margin, :] = 0
+        binary_mask[-mask_edge_margin:, :] = 0
+        binary_mask[:, 0:mask_edge_margin] = 0
+        binary_mask[:, -mask_edge_margin:] = 0
+
+        # Drop tiny connected components before thinning; most of the previous
+        # false positives were paper texture islands, not real strokes.
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask, 8)
+        component_area_floor = max(24, int(0.000015 * w_px * h_px))
+        component_span_floor = max(32, int(0.012 * min(w_px, h_px)))
+        filtered_mask = np.zeros_like(binary_mask)
+        kept_components = 0
+        for label in range(1, num_labels):
+            area = stats[label, cv2.CC_STAT_AREA]
+            comp_w = stats[label, cv2.CC_STAT_WIDTH]
+            comp_h = stats[label, cv2.CC_STAT_HEIGHT]
+            if area >= component_area_floor or max(comp_w, comp_h) >= component_span_floor:
+                filtered_mask[labels == label] = 255
+                kept_components += 1
+        binary_mask = cv2.morphologyEx(
+            filtered_mask,
+            cv2.MORPH_CLOSE,
+            np.ones((3, 3), np.uint8),
+            iterations=1
+        )
         binary_mask[0:mask_edge_margin, :] = 0
         binary_mask[-mask_edge_margin:, :] = 0
         binary_mask[:, 0:mask_edge_margin] = 0
@@ -317,7 +392,307 @@ def api_method2_upload():
         cv2.imwrite(mask_path, binary_mask)
         logger.info(f"Generated binary mask for skeletonizing: {mask_path}")
 
-        # 4b. Generate SVG from contours
+        # 4b. Perform Skeletonization
+        from server.skeletonify import thinning, traceSkeleton
+
+        def polyline_length(poly):
+            total = 0.0
+            for idx in range(1, len(poly)):
+                dx = poly[idx][0] - poly[idx - 1][0]
+                dy = poly[idx][1] - poly[idx - 1][1]
+                total += float(np.hypot(dx, dy))
+            return total
+
+        def point_distance(a, b):
+            return float(np.hypot(b[0] - a[0], b[1] - a[1]))
+
+        def dedupe_polyline(poly, min_dist=0.75):
+            if len(poly) <= 1:
+                return poly[:]
+            out = [poly[0]]
+            for pt in poly[1:]:
+                if point_distance(out[-1], pt) >= min_dist:
+                    out.append(pt)
+            if len(out) == 1 and len(poly) > 1:
+                out.append(poly[-1])
+            return out
+
+        def point_to_segment_distance(point, start, end):
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            if dx == 0 and dy == 0:
+                return point_distance(point, start)
+            t = ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / float(dx * dx + dy * dy)
+            t = max(0.0, min(1.0, t))
+            proj = [start[0] + t * dx, start[1] + t * dy]
+            return point_distance(point, proj)
+
+        def simplify_rdp(points, epsilon):
+            if len(points) <= 2:
+                return points[:]
+            max_dist = 0.0
+            max_idx = -1
+            for idx in range(1, len(points) - 1):
+                dist = point_to_segment_distance(points[idx], points[0], points[-1])
+                if dist > max_dist:
+                    max_dist = dist
+                    max_idx = idx
+            if max_dist <= epsilon or max_idx == -1:
+                return [points[0], points[-1]]
+            left = simplify_rdp(points[:max_idx + 1], epsilon)
+            right = simplify_rdp(points[max_idx:], epsilon)
+            return left[:-1] + right
+
+        def polyline_bounds(poly):
+            xs = [pt[0] for pt in poly]
+            ys = [pt[1] for pt in poly]
+            return min(xs), min(ys), max(xs), max(ys)
+
+        def is_closed_polyline(poly):
+            if len(poly) < 5:
+                return False
+            min_x, min_y, max_x, max_y = polyline_bounds(poly)
+            diag = float(np.hypot(max_x - min_x, max_y - min_y))
+            return point_distance(poly[0], poly[-1]) <= max(3.0, diag * 0.08)
+
+        def simplify_trace_polyline(poly):
+            points = dedupe_polyline(poly)
+            if len(points) <= 2:
+                return points
+
+            min_x, min_y, max_x, max_y = polyline_bounds(points)
+            diag = float(np.hypot(max_x - min_x, max_y - min_y))
+            length = polyline_length(points)
+            if length <= 0:
+                return points
+
+            if is_closed_polyline(points):
+                epsilon = max(0.45, min(2.2, diag * 0.006))
+                contour = np.array(points, dtype=np.float32).reshape((-1, 1, 2))
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+                simplified = [
+                    [int(round(pt[0][0])), int(round(pt[0][1]))]
+                    for pt in approx
+                ]
+                if len(simplified) < 8 and len(points) >= 8:
+                    simplified = points
+                elif simplified and point_distance(simplified[0], simplified[-1]) > 0:
+                    simplified.append(simplified[0])
+                return simplified
+
+            direct = point_distance(points[0], points[-1])
+            straightness = direct / length if length else 1.0
+            epsilon = max(0.5, min(5.0, diag * 0.008 + len(points) * 0.0015))
+            simplified = simplify_rdp(points, epsilon)
+
+            # Curvy open strokes, like smiles or letters, should not collapse to a single angle.
+            if straightness < 0.88 and len(simplified) < 4 and len(points) >= 8:
+                simplified = simplify_rdp(points, max(0.35, epsilon * 0.45))
+                if len(simplified) < 4:
+                    return points
+            return simplified
+
+        def ellipse_polyline_from_bbox(x, y, comp_w, comp_h):
+            cx = x + (comp_w - 1) / 2.0
+            cy = y + (comp_h - 1) / 2.0
+            rx = max(1.0, comp_w / 2.0 - 1.0)
+            ry = max(1.0, comp_h / 2.0 - 1.0)
+            point_count = int(max(12, min(36, round((rx + ry) * 1.5))))
+            points = []
+            for idx in range(point_count):
+                theta = (2.0 * np.pi * idx) / point_count
+                points.append([
+                    int(round(cx + np.cos(theta) * rx)),
+                    int(round(cy + np.sin(theta) * ry)),
+                ])
+            points.append(points[0])
+            return points
+
+        method_styles = {
+            "thru_cut": {
+                "svg": "#3b82f6",
+                "overlay_outer": (246, 130, 59, 90),
+                "overlay_inner": (246, 130, 59, 255),
+            },
+            "score": {
+                "svg": "#ef4444",
+                "overlay_outer": (68, 68, 239, 90),
+                "overlay_inner": (68, 68, 239, 255),
+            },
+            "crease": {
+                "svg": "#22c55e",
+                "overlay_outer": (94, 197, 34, 90),
+                "overlay_inner": (94, 197, 34, 255),
+            },
+        }
+
+        hsv_rectified = cv2.cvtColor(rect_result["image"], cv2.COLOR_BGR2HSV)
+
+        def classify_polyline_method(poly):
+            votes = {"red": 0, "green": 0, "blue": 0, "neutral": 0}
+            sample_count = min(28, len(poly))
+            for sample_idx in range(sample_count):
+                poly_idx = int(round(sample_idx * (len(poly) - 1) / max(1, sample_count - 1)))
+                px, py = poly[poly_idx]
+                best = None
+
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        sx = min(max(int(round(px + dx)), 0), w_px - 1)
+                        sy = min(max(int(round(py + dy)), 0), h_px - 1)
+                        h_val, s_val, v_val = hsv_rectified[sy, sx]
+                        # Prefer saturated ink pixels near the skeleton over paper/noise.
+                        score = int(s_val) * 2 + max(0, 245 - int(v_val))
+                        if best is None or score > best[0]:
+                            best = (score, int(h_val), int(s_val), int(v_val))
+
+                if best is None:
+                    continue
+
+                _, hue, sat, val = best
+                if sat < 35 or val > 250:
+                    votes["neutral"] += 1
+                elif hue < 10 or hue >= 165:
+                    votes["red"] += 1
+                elif 35 <= hue <= 88:
+                    votes["green"] += 1
+                elif 90 <= hue <= 140:
+                    votes["blue"] += 1
+                else:
+                    votes["neutral"] += 1
+
+            dominant = max(votes, key=votes.get)
+            if dominant == "red":
+                return "score"
+            if dominant == "green":
+                return "crease"
+            return "thru_cut"
+
+        skeleton_mask = binary_mask.copy()
+        loop_overrides = []
+        num_loop_labels, loop_labels, loop_stats, _ = cv2.connectedComponentsWithStats(binary_mask, 8)
+        compact_span_cap = max(24, int(0.08 * min(w_px, h_px)))
+
+        for label in range(1, num_loop_labels):
+            x = loop_stats[label, cv2.CC_STAT_LEFT]
+            y = loop_stats[label, cv2.CC_STAT_TOP]
+            comp_w = loop_stats[label, cv2.CC_STAT_WIDTH]
+            comp_h = loop_stats[label, cv2.CC_STAT_HEIGHT]
+            area = loop_stats[label, cv2.CC_STAT_AREA]
+            span = max(comp_w, comp_h)
+            if span > compact_span_cap or comp_w < 5 or comp_h < 5:
+                continue
+
+            aspect = comp_w / float(comp_h)
+            density = area / float(max(1, comp_w * comp_h))
+            comp_mask = (loop_labels[y:y + comp_h, x:x + comp_w] == label).astype(np.uint8)
+            comp_contours, _ = cv2.findContours(comp_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not comp_contours:
+                continue
+            contour = max(comp_contours, key=cv2.contourArea)
+            perimeter = cv2.arcLength(contour, True)
+            contour_area = cv2.contourArea(contour)
+            circularity = 0.0 if perimeter <= 0 else (4.0 * np.pi * contour_area) / (perimeter * perimeter)
+
+            if 0.55 <= aspect <= 1.85 and 0.28 <= density <= 0.90 and circularity >= 0.32:
+                ellipse_poly = ellipse_polyline_from_bbox(x, y, comp_w, comp_h)
+                loop_overrides.append({
+                    "points": ellipse_poly,
+                    "method": classify_polyline_method(ellipse_poly),
+                })
+                skeleton_mask[loop_labels == label] = 0
+
+        # Optimization: Downscale for skeletonization to avoid hanging on large mobile photos
+        max_skel_dim = 1600
+        scale = min(1.0, max_skel_dim / max(w_px, h_px))
+
+        t_skel_start = time.perf_counter()
+        if scale < 1.0:
+            new_w, new_h = int(w_px * scale), int(h_px * scale)
+            work_mask = cv2.resize(skeleton_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        else:
+            new_w, new_h = w_px, h_px
+            work_mask = skeleton_mask
+
+        im_skel = thinning((work_mask > 128).astype(np.uint8))
+        t_after_thinning = time.perf_counter()
+
+        # traceSkeleton becomes very slow when it recursively scans an entire sparse
+        # canvas, so trace each kept skeleton component inside its own bounding box.
+        num_skel_labels, _, skel_stats, _ = cv2.connectedComponentsWithStats(
+            im_skel.astype(np.uint8),
+            8
+        )
+        trace_pad = 2
+        min_trace_area = 8
+        min_trace_span = 18
+        min_trace_length = 18.0
+        polys = loop_overrides[:]
+
+        for label in range(1, num_skel_labels):
+            x = skel_stats[label, cv2.CC_STAT_LEFT]
+            y = skel_stats[label, cv2.CC_STAT_TOP]
+            comp_w = skel_stats[label, cv2.CC_STAT_WIDTH]
+            comp_h = skel_stats[label, cv2.CC_STAT_HEIGHT]
+            area = skel_stats[label, cv2.CC_STAT_AREA]
+            if area < min_trace_area and max(comp_w, comp_h) < min_trace_span:
+                continue
+
+            x0 = max(0, x - trace_pad)
+            y0 = max(0, y - trace_pad)
+            x1 = min(new_w, x + comp_w + trace_pad)
+            y1 = min(new_h, y + comp_h + trace_pad)
+            roi = im_skel[y0:y1, x0:x1]
+
+            for poly in traceSkeleton(roi, 0, 0, roi.shape[1], roi.shape[0], 2, 999, []):
+                if len(poly) < 2:
+                    continue
+                shifted_poly = [[int(pt[0] + x0), int(pt[1] + y0)] for pt in poly]
+                if polyline_length(shifted_poly) < min_trace_length:
+                    continue
+                if scale < 1.0:
+                    shifted_poly = [
+                        [int(round(pt[0] / scale)), int(round(pt[1] / scale))]
+                        for pt in shifted_poly
+                    ]
+                method = classify_polyline_method(shifted_poly)
+                shifted_poly = simplify_trace_polyline(shifted_poly)
+                if len(shifted_poly) < 2 or polyline_length(shifted_poly) < min_trace_length:
+                    continue
+                polys.append({
+                    "points": shifted_poly,
+                    "method": method,
+                })
+
+        t_after_trace = time.perf_counter()
+
+        logger.info(
+            "Skeleton pipeline: %d raw mask components -> %d kept, scale=%.3f, "
+            "thinning=%.3fs, trace=%.3fs, polylines=%d",
+            max(0, num_labels - 1),
+            kept_components,
+            scale,
+            t_after_thinning - t_skel_start,
+            t_after_trace - t_after_thinning,
+            len(polys),
+        )
+
+        # 4. Generate transparent overlay with color-coded edge lines (alpha channel)
+        edge_overlay = np.zeros((h_px, w_px, 4), dtype=np.uint8)
+        
+        # Draw skeleton polylines
+        for traced in polys:
+            poly = traced["points"]
+            if len(poly) < 2: continue
+            pts = np.array(poly, np.int32).reshape((-1, 1, 2))
+            style = method_styles.get(traced["method"], method_styles["thru_cut"])
+            cv2.polylines(edge_overlay, [pts], isClosed=False, color=style["overlay_inner"], thickness=1, lineType=cv2.LINE_AA)
+
+        edges_path = os.path.join(uploads_dir, "rectified_edges.png")
+        cv2.imwrite(edges_path, edge_overlay)
+        logger.info(f"Generated neon-edge detection overlay: {edges_path}")
+
+        # 4c. Generate SVG from skeleton polylines
         svg_path = os.path.join(uploads_dir, "rectified_edges.svg")
         with open(svg_path, "w") as f:
             f.write(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w_px} {h_px}" width="{w_px}px" height="{h_px}px">\n')
@@ -330,18 +705,19 @@ def api_method2_upload():
             })
             f.write(f"  <meta name=\"urumi-scanner\" content='{meta_json}' />\n")
             
-            f.write('  <style>path { fill: none; stroke: #bc8cff; stroke-width: 2px; vector-effect: non-scaling-stroke; }</style>\n')
-            for contour in contours:
-                if len(contour) < 2:
+            f.write('  <style>path { fill: none; stroke-width: 1px; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }</style>\n')
+            for traced in polys:
+                poly = traced["points"]
+                if len(poly) < 2:
                     continue
-                # contour shape is (N, 1, 2)
                 d = []
-                for i, pt in enumerate(contour):
-                    x, y = pt[0]
+                for i, pt in enumerate(poly):
+                    x, y = pt
                     prefix = "M" if i == 0 else "L"
                     d.append(f"{prefix} {x} {y}")
-                d.append("Z")
-                f.write(f'<path d="{" ".join(d)}" />\n')
+                method = traced["method"]
+                stroke = method_styles.get(method, method_styles["thru_cut"])["svg"]
+                f.write(f'  <path d="{" ".join(d)}" stroke="{stroke}" data-method="{method}" />\n')
             f.write('</svg>')
         logger.info(f"Generated vector SVG edges: {svg_path}")
 

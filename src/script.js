@@ -35,7 +35,7 @@ import { updateStatus, setStartButtonState } from './UI.js';
 import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
-import { handleFile } from './FileHandler.js?v=5';
+import { handleFile } from './FileHandler.js?v=6';
 import { CanvasEditor } from './CanvasEditor.js?v=4';
 import { packMicrosegment } from './BinaryUtils.js';
 
@@ -48,6 +48,7 @@ import { packMicrosegment } from './BinaryUtils.js';
  * 92.44) can no longer drift. (Assessment R3 / fix F3.)
  */
 const DEFAULT_STEPS = { X: 160, Y: 160, Z: 1200, A: 120 };
+const URUMI_VISION_SERVER_URL = "http://localhost:5000";
 
 /**
  * stampSeq — copies a 26-byte MicroSegment packet, stamps the rolling
@@ -93,6 +94,8 @@ const state = {
     gcode: '',           // Display text of the loaded file (preamble lines joined)
     preamble: [],        // Text setup commands before the binary stream
     binaryPackets: [],   // Pre-built Uint8Array[] from the converter
+    packetMeta: [],      // Packet index ranges with SVG method/shape metadata
+    editorMirrorsMachineData: true, // False when generated binary queue is hidden from Data Editor
     currentFile: null,   // Holds the raw File object to allow re-conversion
     stepsPerMM: 1.0,     // Conversion factor for Viewer canvas
     lastSentCmd: null,   // Tracks the last sent trajectory line
@@ -106,13 +109,10 @@ const state = {
     suctionAutoActiveZones: [], // Automated active zones calculated from the drawing
     suctionLastSignature: null, // Last suction/servo state actually sent to hardware
     suctionControlEnabled: false, // Master gate: only send suction commands when enabled
-    activeRunType: null, // 'job', 'jog', 'park', or null
-    parkEnabled: localStorage.getItem('parkEnabled') === 'true', // Whether gantry should park after job finishes
-    parkX: parseFloat(localStorage.getItem('parkX')) || 0, // X park coordinate in mm
-    parkY: parseFloat(localStorage.getItem('parkY')) || 0, // Y park coordinate in mm
-    isParking: false, // Internal flag to track when the machine is executing the park move
+    activeRunType: null, // 'job', 'jog', or null
     isPaused: false, // Internal flag to track when the machine is paused for a tool change
     pendingPackets: [],      // Array holding binary packets to send
+    binaryStreamOffset: 0,   // Global packet index of the current binary chunk
     base: 0,                 // Go-Back-N oldest unacknowledged packet index
     nextSend: 0,             // Go-Back-N next packet to send
     isBinaryStreaming: false, // Flag: are we currently streaming binary segments?
@@ -146,6 +146,33 @@ const segmentLengthSlider = document.getElementById('segmentLengthSlider');
 const cuttingSpeedInput = document.getElementById('cuttingSpeedInput');
 const cuttingSpeedSlider = document.getElementById('cuttingSpeedSlider');
 
+// --- Embedded Vision Elements ---
+const visionPhotoInput = document.getElementById('visionPhotoInput');
+const btnVisionUpload = document.getElementById('btnVisionUpload');
+const btnVisionImport = document.getElementById('btnVisionImport');
+const btnVisionImportCanvas = document.getElementById('btnVisionImportCanvas');
+const btnVisionReset = document.getElementById('btnVisionReset');
+const visionStatus = document.getElementById('visionStatus');
+const visionSetup = document.getElementById('visionSetup');
+const visionReview = document.getElementById('visionReview');
+const visionQrCanvas = document.getElementById('visionQrCanvas');
+const visionQrSpinner = document.getElementById('visionQrSpinner');
+const visionPhoneLink = document.getElementById('visionPhoneLink');
+const btnVisionRefreshQr = document.getElementById('btnVisionRefreshQr');
+const visionRectifiedPreview = document.getElementById('visionRectifiedPreview');
+const visionMaskPreview = document.getElementById('visionMaskPreview');
+const visionEdgesPreview = document.getElementById('visionEdgesPreview');
+const visionStageEmpty = document.getElementById('visionStageEmpty');
+const visionMetaFrame = document.getElementById('visionMetaFrame');
+const visionMetaSize = document.getElementById('visionMetaSize');
+const visionMetaScale = document.getElementById('visionMetaScale');
+const visionMetaError = document.getElementById('visionMetaError');
+const visionSimplifySlider = document.getElementById('visionSimplifySlider');
+const visionSimplifyValue = document.getElementById('visionSimplifyValue');
+const visionMinPathSlider = document.getElementById('visionMinPathSlider');
+const visionMinPathValue = document.getElementById('visionMinPathValue');
+let latestVisionPayload = null;
+
 // --- Connection Setup ---
 // Initialize the WebSocket connection. We provide "callbacks" here.
 // Callbacks are functions that run automatically when specific events happen.
@@ -175,8 +202,9 @@ const connection = new MachineConnection({
         state.crcErrors = 0; // Reset consecutive CRC errors on progress
 
         // Render path in viewer (works even if tab is hidden)
-        if (state.base - 1 > state.simulatedPathIndex) {
-            state.simulatedPathIndex = state.base - 1;
+        const globalPacketIndex = state.binaryStreamOffset + state.base - 1;
+        if (globalPacketIndex > state.simulatedPathIndex) {
+            state.simulatedPathIndex = globalPacketIndex;
             updateViewer();
         }
 
@@ -280,10 +308,10 @@ function updateViewer() {
     // so the render still produces valid data that the user sees on switching tabs.
     const rect = container.getBoundingClientRect();
     if (rect.width < 10 || rect.height < 10) {
-        canvas.width  = 960;
-        canvas.height = 640;
+        canvas.width  = 770;
+        canvas.height = 960;
     }
-    renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets);
+    renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets, state.packetMeta);
 }
 
 /**
@@ -411,8 +439,9 @@ function simulateBinaryStreaming() {
             state.nextSend = state.base;
             state.lastProgressTime = Date.now();
 
-            if (state.base - 1 > state.simulatedPathIndex) {
-                state.simulatedPathIndex = state.base - 1;
+            const globalPacketIndex = state.binaryStreamOffset + state.base - 1;
+            if (globalPacketIndex > state.simulatedPathIndex) {
+                state.simulatedPathIndex = globalPacketIndex;
                 updateViewer();
             }
 
@@ -429,6 +458,202 @@ function simulateBinaryStreaming() {
     state.simTimeout = setTimeout(simulateNext, 50);
 }
 
+function makeBinaryStreamCommand(start, end) {
+    return `__BINARY_STREAM__:${start}:${end}`;
+}
+
+function parseBinaryStreamCommand(command) {
+    if (command === '__BINARY_STREAM__') {
+        return { start: 0, end: Math.max(0, state.binaryPackets.length - 1) };
+    }
+    if (!command.startsWith('__BINARY_STREAM__:')) return null;
+    const [, startText, endText] = command.split(':');
+    const start = parseInt(startText, 10);
+    const end = parseInt(endText, 10);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return null;
+    return { start, end: Math.min(end, state.binaryPackets.length - 1) };
+}
+
+function getMethodGroup(method) {
+    return String(method || '').toLowerCase() === 'crease' ? 'crease' : 'work';
+}
+
+function buildBinaryStreamCommands(packets, packetMeta = []) {
+    if (!packets?.length) return [];
+    const sortedMeta = (packetMeta || [])
+        .filter(meta => Number.isFinite(meta.start) && Number.isFinite(meta.end) && meta.end >= meta.start)
+        .sort((a, b) => a.start - b.start);
+
+    if (!sortedMeta.length) {
+        return [makeBinaryStreamCommand(0, packets.length - 1)];
+    }
+
+    const runs = [];
+    sortedMeta.forEach(meta => {
+        const group = getMethodGroup(meta.method);
+        const start = Math.max(0, meta.start);
+        const end = Math.min(packets.length - 1, meta.end);
+        const last = runs[runs.length - 1];
+        if (last && last.group === group && start <= last.end + 1) {
+            last.end = Math.max(last.end, end);
+        } else {
+            runs.push({ group, start, end });
+        }
+    });
+
+    if (!runs.length) return [makeBinaryStreamCommand(0, packets.length - 1)];
+    if (runs[0].start > 0) {
+        runs.unshift({ group: 'setup', start: 0, end: runs[0].start - 1 });
+    }
+    const lastRun = runs[runs.length - 1];
+    if (lastRun.end < packets.length - 1) {
+        lastRun.end = packets.length - 1;
+    }
+
+    const hasCrease = runs.some(run => run.group === 'crease');
+    if (!hasCrease) {
+        return runs.map(run => makeBinaryStreamCommand(run.start, run.end));
+    }
+
+    const commands = [];
+    let beforeCreasePauseInserted = false;
+    let afterCreasePauseInserted = false;
+
+    runs.forEach((run, index) => {
+        if (run.group === 'crease' && !beforeCreasePauseInserted) {
+            commands.push('PAUSE_FOR_TOOL_CHANGE:Install creasing tool');
+            beforeCreasePauseInserted = true;
+        }
+
+        if (run.group !== 'crease' && beforeCreasePauseInserted && !afterCreasePauseInserted) {
+            commands.push('PAUSE_FOR_TOOL_CHANGE:Switch back to cutting/scoring tool');
+            afterCreasePauseInserted = true;
+        }
+
+        commands.push(makeBinaryStreamCommand(run.start, run.end));
+
+        const nextRun = runs[index + 1];
+        if (run.group === 'crease' && !nextRun && !afterCreasePauseInserted) {
+            commands.push('PAUSE_FOR_TOOL_CHANGE:Creasing complete; change tool before finishing');
+            afterCreasePauseInserted = true;
+        }
+    });
+
+    return commands;
+}
+
+function buildJobQueue() {
+    const textCommands = state.preamble
+        .map(l => l.trim())
+        .filter(l => l.length > 0 && !l.startsWith(';'))
+        .filter(l => !(state.binaryPackets?.length && l.startsWith('PAUSE_FOR_TOOL_CHANGE')));
+
+    if (!state.binaryPackets?.length) {
+        return textCommands;
+    }
+
+    return [
+        ...textCommands,
+        ...buildBinaryStreamCommands(state.binaryPackets, state.packetMeta)
+    ];
+}
+
+function formatMethodLabel(method) {
+    const normalized = String(method || 'thru_cut').toLowerCase();
+    if (normalized === 'crease') return 'Crease';
+    if (normalized === 'off_base' || normalized === 'score' || normalized === 'scoring') return 'Score';
+    return 'Cut';
+}
+
+function formatPacketRange(start, end) {
+    return start === end ? `packet ${start + 1}` : `packets ${start + 1}-${end + 1}`;
+}
+
+function buildDataEditorSummary(result, stepsPerMM = 1.0) {
+    const preamble = result.preamble || [];
+    const packets = result.packets || [];
+    const packetMeta = result.packetMeta || [];
+    const setupCommands = preamble
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith(';') && !line.startsWith('PAUSE_FOR_TOOL_CHANGE'));
+    const streamCommands = buildBinaryStreamCommands(packets, packetMeta);
+    const methodStats = new Map();
+
+    packetMeta.forEach(meta => {
+        const key = formatMethodLabel(meta.method);
+        const current = methodStats.get(key) || { shapes: 0, packets: 0 };
+        current.shapes += 1;
+        current.packets += Math.max(0, (meta.end ?? -1) - (meta.start ?? 0) + 1);
+        methodStats.set(key, current);
+    });
+
+    const lines = [
+        'JOB PLAN',
+        '========',
+        '',
+        `Total motion packets: ${packets.length}`,
+        `Drawable paths: ${packetMeta.length || 'unknown'}`,
+        `Preview scale: ${Number(stepsPerMM).toFixed(2)} steps/mm`,
+        ''
+    ];
+
+    if (methodStats.size > 0) {
+        lines.push('Pass Summary', '------------');
+        for (const [label, stats] of methodStats.entries()) {
+            lines.push(`- ${label}: ${stats.shapes} path${stats.shapes === 1 ? '' : 's'}, ${stats.packets} packet${stats.packets === 1 ? '' : 's'}`);
+        }
+        lines.push('');
+    }
+
+    if (setupCommands.length > 0) {
+        lines.push('Setup Commands', '--------------');
+        setupCommands.forEach(command => lines.push(`- ${command}`));
+        lines.push('');
+    }
+
+    lines.push('Run Order', '---------');
+    if (!streamCommands.length) {
+        lines.push('- No binary motion chunks were generated.');
+    } else {
+        streamCommands.forEach((command, index) => {
+            if (command.startsWith('PAUSE_FOR_TOOL_CHANGE')) {
+                const message = command.includes(':')
+                    ? command.slice(command.indexOf(':') + 1).trim()
+                    : 'Change tool';
+                lines.push(`${index + 1}. TOOL CHANGE: ${message}`);
+                return;
+            }
+
+            const range = parseBinaryStreamCommand(command);
+            if (!range) {
+                lines.push(`${index + 1}. ${command}`);
+                return;
+            }
+
+            const methods = new Set();
+            let shapeCount = 0;
+            packetMeta.forEach(meta => {
+                if (meta.end < range.start || meta.start > range.end) return;
+                methods.add(formatMethodLabel(meta.method));
+                shapeCount += 1;
+            });
+            const methodText = methods.size ? Array.from(methods).join(', ') : 'Motion';
+            lines.push(`${index + 1}. ${methodText}: ${formatPacketRange(range.start, range.end)} (${range.end - range.start + 1} packets, ${shapeCount || 'unknown'} paths)`);
+        });
+    }
+
+    lines.push(
+        '',
+        'Notes',
+        '-----',
+        '- Raw binary packet bytes are hidden here so this tab stays readable.',
+        '- Use Trajectory Preview to visually inspect the motion path.',
+        '- Tool-change pauses happen during the run, between the listed chunks.'
+    );
+
+    return lines.join('\n');
+}
+
 /**
  * START JOB
  * Called when the user clicks "Start Cutting".
@@ -440,15 +665,24 @@ function startJob() {
         return;
     }
 
-    // Build queue: preamble text commands + binary stream sentinel
-    state.gcodeQueue = state.preamble
-        .map(l => l.trim())
-        .filter(l => l.length > 0 && !l.startsWith(';'));
-
-    // Inject binary stream sentinel after preamble if packets exist
-    if (state.binaryPackets && state.binaryPackets.length > 0) {
-        state.gcodeQueue.push('__BINARY_STREAM__');
+    // --- SAFE RETRACT INJECTION (binary packet prepended to binaryPackets) ---
+    if (state.wasInterrupted && state.binaryPackets?.length) {
+        const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
+        const zUpStep = Math.round(12 * zStepsPerMM);
+        const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+        const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
+        const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
+        const retractPkt = stampSeq(packMicrosegment(0, 0, -zUpStep, 0, interval, 0x01, 0), 0);
+        state.binaryPackets = [retractPkt, ...state.binaryPackets];
+        state.packetMeta = (state.packetMeta || []).map(meta => ({
+            ...meta,
+            start: meta.start + 1,
+            end: meta.end + 1
+        }));
+        log(`Injected Safe Retract (Z-Up) as binary packet`, 'info');
     }
+
+    state.gcodeQueue = buildJobQueue();
 
     if (state.gcodeQueue.length === 0) {
         log('No commands to send.', 'error');
@@ -457,10 +691,10 @@ function startJob() {
 
     state.activeRunType = 'job';
 
-    // --- SUCTION BED INJECTION (before __BINARY_STREAM__ sentinel) ---
+    // --- SUCTION BED INJECTION (before the first binary stream chunk) ---
     if (shouldRunSuction()) {
         const suctionCommands = buildSuctionCommandSequence(true);
-        const sentinelIdx = state.gcodeQueue.indexOf('__BINARY_STREAM__');
+        const sentinelIdx = state.gcodeQueue.findIndex(cmd => parseBinaryStreamCommand(cmd));
         if (sentinelIdx > -1) {
             state.gcodeQueue.splice(sentinelIdx, 0, ...suctionCommands);
         } else {
@@ -470,21 +704,8 @@ function startJob() {
         log(`Injected Suction Settings: ${suctionCommands.join(' | ')}`, 'info');
     }
 
-    // --- SAFE RETRACT INJECTION (binary packet prepended to binaryPackets) ---
-    if (state.wasInterrupted && state.binaryPackets?.length) {
-        const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
-        const zUpStep = Math.round(5 * zStepsPerMM);
-        const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
-        const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
-        const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
-        const retractPkt = stampSeq(packMicrosegment(0, 0, -zUpStep, 0, interval, 0x01, 0), 0);
-        state.binaryPackets = [retractPkt, ...state.binaryPackets];
-        log(`Injected Safe Retract (Z-Up) as binary packet`, 'info');
-    }
-
     state.wasInterrupted = false;
     state.simulatedPathIndex = -1;
-    state.isParking = false;
 
     log(`Starting Job: ${state.gcodeQueue.length} lines.`, 'success');
 
@@ -575,75 +796,6 @@ function stopJob() {
 }
 
 /**
- * GENERATE PARK COMMANDS
- * Calculates relative step motions to travel from current dead-reckoning position
- * to the user's customized park coordinates, ensuring a safe Z retraction first.
- */
-function generateParkCommands() {
-    const cmds = [];
-
-    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
-    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
-    const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
-    const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
-
-    // Step 1: Ensure Z-axis is retracted to a safe height (5mm above bed)
-    const zTarget = 5;
-    if (jogState.posZ < zTarget) {
-        const dz = zTarget - jogState.posZ;
-        const relZ = Math.round(-dz * zStepsPerMM); // positive dz (Up) -> negative Z steps
-        if (relZ !== 0) {
-            const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
-            const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
-            cmds.push(packMicrosegment(0, 0, relZ, 0, interval, 0x01, 0));
-            jogState.posZ = zTarget;
-        }
-    }
-
-    // Step 2: Traverse X and Y to the park coordinates
-    const dx = state.parkX - jogState.posX;
-    const dy = state.parkY - jogState.posY;
-    const relX = Math.round(dx * xStepsPerMM);
-    const relY = Math.round(dy * yStepsPerMM);
-
-    if (relX !== 0 || relY !== 0) {
-        const maxAbsStep = Math.max(Math.abs(relX), Math.abs(relY));
-        const spu = maxAbsStep === Math.abs(relX) ? xStepsPerMM : yStepsPerMM;
-        const speed = feedRate * spu;
-        const interval = Math.max(1, Math.min(Math.round(150_000_000 / speed), 150_000_000));
-        cmds.push(packMicrosegment(relX, relY, 0, 0, interval, 0, 0));
-    }
-
-    return cmds;
-}
-
-/**
- * PARK NOW
- * Manually commands the gantry to travel to the park position coordinates immediately.
- */
-function parkNow() {
-    if (!connection.connected && !document.getElementById('simModeCheckbox')?.checked) {
-        log('Park: Not connected to machine.', 'error');
-        return;
-    }
-
-    log('Moving gantry to park position...', 'info');
-    const pkts = generateParkCommands();
-    if (pkts && pkts.length > 0) {
-        // Stamp seq numbers and stream directly
-        state.activeRunType = 'park';
-        state.binaryPackets = pkts;
-        state.gcodeQueue = ['__BINARY_STREAM__'];
-        state.isSending = true;
-        setStartButtonState(true);
-        executeNextTextCommand();
-        log('Park sequence initiated.', 'success');
-    } else {
-        log('Gantry is already at the park position.', 'info');
-    }
-}
-
-/**
  * EXECUTE NEXT TEXT COMMAND
  * Sends the next non-motion or setup command sequentially.
  */
@@ -654,9 +806,13 @@ function executeNextTextCommand() {
         const nextCmd = state.gcodeQueue[0];
 
     // When we hit a __BINARY_STREAM__ sentinel, launch the binary pipeline
-        if (nextCmd === '__BINARY_STREAM__') {
+        const binaryRange = parseBinaryStreamCommand(nextCmd);
+        if (binaryRange) {
             state.gcodeQueue.shift();
-            startBinaryStreaming(state.binaryPackets);
+            startBinaryStreaming(
+                state.binaryPackets.slice(binaryRange.start, binaryRange.end + 1),
+                binaryRange.start
+            );
             return;
         }
 
@@ -678,8 +834,11 @@ function executeNextTextCommand() {
 
         state.currentLine = state.gcodeQueue.shift();
 
-        if (state.currentLine === 'PAUSE_FOR_TOOL_CHANGE') {
-            log('⏸️ PAUSED FOR TOOL CHANGE. Please change the tool, then click Resume Job.', 'warning');
+        if (state.currentLine.startsWith('PAUSE_FOR_TOOL_CHANGE')) {
+            const message = state.currentLine.includes(':')
+                ? state.currentLine.slice(state.currentLine.indexOf(':') + 1).trim()
+                : 'Please change the tool';
+            log(`PAUSED FOR TOOL CHANGE. ${message}, then click Resume Job.`, 'warning');
             state.isSending = false;
             state.isPaused = true;
             setStartButtonState(false, true);
@@ -699,19 +858,6 @@ function executeNextTextCommand() {
             log(`> ${state.currentLine}`, 'tx');
         }
     } else {
-        if (state.parkEnabled && !state.isParking) {
-            state.isParking = true;
-            log('Job trajectory completed. Initiating Gantry Park sequence...', 'info');
-            const parkCmds = generateParkCommands();
-            if (parkCmds && parkCmds.length > 0) {
-                state.gcodeQueue.push(...parkCmds);
-                executeNextTextCommand();
-                return;
-            }
-        }
-
-        state.isParking = false;
-
         const isSimMode = document.getElementById('simModeCheckbox')?.checked;
         if (isSimMode || !connection.connected) {
             finishJob();
@@ -736,7 +882,7 @@ function executeNextTextCommand() {
  * Takes a pre-built Uint8Array[] and starts Go-Back-N transmission.
  * @param {Uint8Array[]} packets - Pre-built 26-byte binary packets from SvgConverter.
  */
-function startBinaryStreaming(packets) {
+function startBinaryStreaming(packets, packetOffset = 0) {
     if (!packets || packets.length === 0) {
         log('Binary stream: no packets to send.', 'warning');
         executeNextTextCommand();
@@ -745,6 +891,7 @@ function startBinaryStreaming(packets) {
 
     // Stamp rolling sequence numbers (0..255 wrap)
     state.pendingPackets = packets.map((pkt, i) => stampSeq(pkt, i & 0xFF));
+    state.binaryStreamOffset = packetOffset;
 
     state.base = 0;
     state.nextSend = 0;
@@ -784,8 +931,6 @@ function finishJob() {
 
     if (completedRunType === 'jog') {
         log('Jog move complete.', 'success');
-    } else if (completedRunType === 'park') {
-        log('Park sequence complete.', 'success');
     } else {
         log('Job Complete. Suction deactivated.', 'success');
     }
@@ -829,84 +974,6 @@ if (suctionPanelHeader && suctionPanelBody) {
             suctionPanelBody.style.display = 'none';
             if (suctionPanelToggle) suctionPanelToggle.style.transform = 'rotate(0deg)';
         }
-    });
-}
-
-const parkPanelHeader = document.getElementById('parkPanelHeader');
-const parkPanelBody = document.getElementById('parkPanelBody');
-const parkPanelToggle = document.getElementById('parkPanelToggle');
-
-if (parkPanelHeader && parkPanelBody) {
-    parkPanelHeader.addEventListener('click', (e) => {
-        if (e.target.tagName === 'INPUT' || e.target.closest('label')) return;
-
-        if (parkPanelBody.style.display === 'none') {
-            parkPanelBody.style.display = 'flex';
-            if (parkPanelToggle) parkPanelToggle.style.transform = 'rotate(180deg)';
-        } else {
-            parkPanelBody.style.display = 'none';
-            if (parkPanelToggle) parkPanelToggle.style.transform = 'rotate(0deg)';
-        }
-    });
-}
-
-// Gantry Parking Control UI Bindings
-const parkXInput = document.getElementById('parkXInput');
-const parkYInput = document.getElementById('parkYInput');
-const parkModeCheckbox = document.getElementById('parkModeCheckbox');
-const parkStatusText = document.getElementById('parkStatusText');
-const btnSetParkCurrent = document.getElementById('btnSetParkCurrent');
-const btnParkNow = document.getElementById('btnParkNow');
-
-if (parkXInput && parkYInput && parkModeCheckbox) {
-    // Initialize fields with values from state
-    parkXInput.value = state.parkX;
-    parkYInput.value = state.parkY;
-    parkModeCheckbox.checked = state.parkEnabled;
-    if (parkStatusText) {
-        parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
-    }
-
-    parkXInput.addEventListener('change', () => {
-        state.parkX = parseFloat(parkXInput.value) || 0;
-        localStorage.setItem('parkX', state.parkX);
-        log(`Park position X updated to ${state.parkX} mm`, 'info');
-    });
-
-    parkYInput.addEventListener('change', () => {
-        state.parkY = parseFloat(parkYInput.value) || 0;
-        localStorage.setItem('parkY', state.parkY);
-        log(`Park position Y updated to ${state.parkY} mm`, 'info');
-    });
-
-    parkModeCheckbox.addEventListener('change', () => {
-        state.parkEnabled = parkModeCheckbox.checked;
-        localStorage.setItem('parkEnabled', state.parkEnabled);
-        if (parkStatusText) {
-            parkStatusText.textContent = state.parkEnabled ? 'ON' : 'OFF';
-        }
-        log(`Park Mode ${state.parkEnabled ? 'Enabled' : 'Disabled'}`, 'success');
-    });
-}
-
-if (btnSetParkCurrent) {
-    btnSetParkCurrent.addEventListener('click', () => {
-        state.parkX = Math.round(jogState.posX * 100) / 100;
-        state.parkY = Math.round(jogState.posY * 100) / 100;
-
-        if (parkXInput) parkXInput.value = state.parkX;
-        if (parkYInput) parkYInput.value = state.parkY;
-
-        localStorage.setItem('parkX', state.parkX);
-        localStorage.setItem('parkY', state.parkY);
-
-        log(`Set park position to current coordinates: X=${state.parkX}, Y=${state.parkY}`, 'success');
-    });
-}
-
-if (btnParkNow) {
-    btnParkNow.addEventListener('click', () => {
-        parkNow();
     });
 }
 
@@ -1078,6 +1145,7 @@ document.getElementById('btnConnect').addEventListener('click', () => {
 // 4. Sync Editor changes
 // When user types in the editor, update our global variable so the preview knows.
 editor.addEventListener('input', () => {
+    if (!state.editorMirrorsMachineData) return;
     state.gcode = editor.value;
     state.suctionAutoActiveZones = calculateActiveZones(state.gcode, state.binaryPackets);
     updateSuctionUI();
@@ -1086,7 +1154,7 @@ editor.addEventListener('input', () => {
 // --- File Handling Setup ---
 
 // Callback: What to do when a file is processed and ready?
-// result: { preamble: string[], packets: Uint8Array[] }
+// result: { preamble: string[], packets: Uint8Array[], packetMeta?: object[] }
 function onGCodeReady(result, stepsPerMM = 1.0) {
     // Accept either the new {preamble, packets} object or a legacy plain string
     if (typeof result === 'string') {
@@ -1094,10 +1162,18 @@ function onGCodeReady(result, stepsPerMM = 1.0) {
     }
     state.preamble = result.preamble || [];
     state.binaryPackets = result.packets || [];
+    state.packetMeta = result.packetMeta || [];
     state.gcode = state.preamble.join('\n');
     state.stepsPerMM = stepsPerMM;
-    editor.value = state.gcode + (state.binaryPackets.length > 0
-        ? `\n; [${state.binaryPackets.length} binary MicroSegment packets ready]` : '');
+    state.editorMirrorsMachineData = state.binaryPackets.length === 0;
+    editor.readOnly = !state.editorMirrorsMachineData;
+    if (state.editorMirrorsMachineData) {
+        editor.value = state.gcode;
+        editor.placeholder = 'Trajectory Data will appear here...';
+    } else {
+        editor.value = buildDataEditorSummary(result, stepsPerMM);
+        editor.placeholder = 'Job plan will appear here...';
+    }
     state.wasInterrupted = false;
     state.lastSentCmd = null;
 
@@ -1118,7 +1194,7 @@ function onGCodeReady(result, stepsPerMM = 1.0) {
 // The CanvasEditor needs the same viewport metrics that Viewer computes so that
 // its machine-mm ↔ canvas-px transforms match exactly. We keep a shared live
 // object and update it whenever the draw tab opens.
-const drawViewState = { scale: 1, offsetX: 0, offsetY: 0, bedW: 960, bedH: 770 };
+const drawViewState = { scale: 1, offsetX: 0, offsetY: 0, bedW: 770, bedH: 960 };
 
 const drawCanvasEl = document.getElementById('drawCanvas');
 const drawContainer = document.getElementById('drawCanvasContainer');
@@ -1131,8 +1207,8 @@ if (drawCanvasEl) {
 // Recompute viewport metrics (mirrors the Viewer math)
 let hasInitializedView = false;
 function updateDrawViewMetrics() {
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960;
 
     if (!drawContainer || !drawCanvasEl) return;
     const rect = drawContainer.getBoundingClientRect();
@@ -1250,6 +1326,18 @@ if (drawEraserInput) {
     });
 }
 
+const drawPageFrameSelect = document.getElementById('drawPageFrame');
+const drawPageOrientationSelect = document.getElementById('drawPageOrientation');
+function syncDrawPageFrame() {
+    if (!canvasEditor) return;
+    canvasEditor.setPageFrame(
+        drawPageFrameSelect?.value || 'none',
+        drawPageOrientationSelect?.value || 'portrait'
+    );
+}
+drawPageFrameSelect?.addEventListener('change', syncDrawPageFrame);
+drawPageOrientationSelect?.addEventListener('change', syncDrawPageFrame);
+
 // Clear All
 document.getElementById('btnDrawClear')?.addEventListener('click', () => {
     if (canvasEditor) {
@@ -1325,9 +1413,612 @@ document.getElementById('drawFileInput')?.addEventListener('change', async (e) =
 // Setup the Tab clicking logic (Preview vs Editor vs Draw)
 setupTabs(() => state, drawBridge);
 
+// --- Embedded Vision Import ---
+function visionAssetUrl(pathOrUrl, serverUrl = URUMI_VISION_SERVER_URL) {
+    if (!pathOrUrl) return "";
+    if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+    const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+    return `${serverUrl}${cleanPath}`;
+}
+
+function setVisionStatus(message, kind = "info") {
+    if (!visionStatus) return;
+    visionStatus.textContent = message;
+    visionStatus.classList.toggle('success', kind === 'success');
+    visionStatus.classList.toggle('error', kind === 'error');
+}
+
+function setVisionStage(stage) {
+    const isReview = stage === "review";
+    visionSetup?.classList.toggle('hidden', isReview);
+    visionReview?.classList.toggle('hidden', !isReview);
+}
+
+function setVisionMeta(payload) {
+    if (visionMetaFrame) visionMetaFrame.textContent = payload?.frame_name || "-";
+    if (visionMetaSize) {
+        const width = payload?.physical_width;
+        const height = payload?.physical_height;
+        visionMetaSize.textContent = width && height ? `${width} x ${height} mm` : "-";
+    }
+    if (visionMetaScale) {
+        const dpi = payload?.dpi ? `${payload.dpi} DPI` : "";
+        const dpm = payload?.dots_per_mm ? `${Number(payload.dots_per_mm).toFixed(1)} px/mm` : "";
+        visionMetaScale.textContent = [dpi, dpm].filter(Boolean).join(' / ') || "-";
+    }
+    if (visionMetaError) {
+        visionMetaError.textContent = Number.isFinite(payload?.error_mm) ? `${payload.error_mm.toFixed(3)} mm` : "-";
+    }
+}
+
+function updateVisionPreviews(payload) {
+    const stamp = Date.now();
+    if (visionRectifiedPreview && payload?.image_url) {
+        visionRectifiedPreview.src = visionAssetUrl(payload.image_url);
+    }
+    if (visionMaskPreview && payload?.mask_image_url) {
+        visionMaskPreview.src = visionAssetUrl(payload.mask_image_url);
+    }
+    if (visionEdgesPreview) {
+        const edgePath = payload?.edges_image_url || `/uploads/rectified_edges.png?t=${stamp}`;
+        visionEdgesPreview.src = visionAssetUrl(edgePath);
+    }
+    if (visionStageEmpty) {
+        visionStageEmpty.classList.toggle('hidden', !!payload?.image_url);
+    }
+    setVisionMeta(payload);
+}
+
+function applyVisionPayload(payload, message = "Photo processed. Review it, then import the trace.") {
+    latestVisionPayload = payload;
+    updateVisionPreviews(payload);
+    setVisionStage("review");
+    if (btnVisionImport) btnVisionImport.disabled = false;
+    if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = false;
+    setVisionStatus(message, "success");
+}
+
+async function generateVisionQrCode() {
+    if (!visionQrCanvas || !visionQrSpinner) return;
+
+    visionQrSpinner.textContent = "Generating...";
+    visionQrSpinner.classList.remove('hidden');
+    visionQrCanvas.style.opacity = '0.3';
+
+    try {
+        const res = await fetch(`${URUMI_VISION_SERVER_URL}/api/network-info`);
+        const data = await res.json();
+        if (!res.ok || !data.url) {
+            throw new Error("Could not get mobile upload link");
+        }
+
+        if (visionPhoneLink) {
+            visionPhoneLink.href = data.url;
+            visionPhoneLink.textContent = data.url;
+        }
+
+        visionQrCanvas.width = 160;
+        visionQrCanvas.height = 160;
+
+        if (window.QRious) {
+            new window.QRious({
+                element: visionQrCanvas,
+                value: data.url,
+                size: 160,
+                background: '#111827',
+                foreground: '#3b82f6',
+                level: 'H'
+            });
+        } else {
+            const ctx = visionQrCanvas.getContext('2d');
+            ctx.clearRect(0, 0, 160, 160);
+            ctx.fillStyle = '#111827';
+            ctx.fillRect(0, 0, 160, 160);
+            ctx.fillStyle = '#e5e7eb';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(data.url, 80, 80);
+        }
+
+        visionQrCanvas.style.opacity = '1';
+        visionQrSpinner.classList.add('hidden');
+        setVisionStatus("Waiting for a bed photo.");
+    } catch (err) {
+        visionQrSpinner.textContent = "QR failed";
+        if (visionPhoneLink) {
+            visionPhoneLink.removeAttribute('href');
+            visionPhoneLink.textContent = "Phone link unavailable";
+        }
+        setVisionStatus(err.message, "error");
+    }
+}
+
+function loadVisionImage(src) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = "Anonymous";
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error(`Failed to load ${src}`));
+        img.src = src;
+    });
+}
+
+function getVisionNumericControl(input, fallback) {
+    const value = parseFloat(input?.value);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function syncVisionTuningOutputs() {
+    if (visionSimplifyValue) {
+        visionSimplifyValue.value = getVisionNumericControl(visionSimplifySlider, 5).toString();
+    }
+    if (visionMinPathValue) {
+        visionMinPathValue.value = getVisionNumericControl(visionMinPathSlider, 16).toString();
+    }
+}
+
+function formatSvgNum(value) {
+    return Number(value.toFixed(2));
+}
+
+function pointDistance(a, b) {
+    return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+function polylineLength(points) {
+    let total = 0;
+    for (let i = 1; i < points.length; i++) {
+        total += pointDistance(points[i - 1], points[i]);
+    }
+    return total;
+}
+
+function dedupePolyline(points, minSegmentLength = 1.25) {
+    if (points.length <= 1) return points.slice();
+    const filtered = [points[0]];
+    for (let i = 1; i < points.length; i++) {
+        if (pointDistance(filtered[filtered.length - 1], points[i]) >= minSegmentLength) {
+            filtered.push(points[i]);
+        }
+    }
+    if (filtered.length === 1 && points.length > 1) {
+        filtered.push(points[points.length - 1]);
+    }
+    return filtered;
+}
+
+function pointToSegmentDistance(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    if (dx === 0 && dy === 0) return pointDistance(point, start);
+    const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)));
+    const proj = { x: start.x + t * dx, y: start.y + t * dy };
+    return pointDistance(point, proj);
+}
+
+function simplifyRdp(points, epsilon) {
+    if (points.length <= 2) return points.slice();
+
+    let maxDistance = 0;
+    let index = -1;
+    const start = points[0];
+    const end = points[points.length - 1];
+
+    for (let i = 1; i < points.length - 1; i++) {
+        const candidateDistance = pointToSegmentDistance(points[i], start, end);
+        if (candidateDistance > maxDistance) {
+            maxDistance = candidateDistance;
+            index = i;
+        }
+    }
+
+    if (maxDistance <= epsilon || index === -1) {
+        return [start, end];
+    }
+
+    const left = simplifyRdp(points.slice(0, index + 1), epsilon);
+    const right = simplifyRdp(points.slice(index), epsilon);
+    return left.slice(0, -1).concat(right);
+}
+
+function getPolylineBounds(points) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const point of points) {
+        if (point.x < minX) minX = point.x;
+        if (point.y < minY) minY = point.y;
+        if (point.x > maxX) maxX = point.x;
+        if (point.y > maxY) maxY = point.y;
+    }
+    return { minX, minY, maxX, maxY };
+}
+
+function isClosedPolyline(points) {
+    if (points.length < 4) return false;
+    const bounds = getPolylineBounds(points);
+    const diag = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+    return pointDistance(points[0], points[points.length - 1]) <= Math.max(3, diag * 0.08);
+}
+
+function simplifyVisionPolyline(points) {
+    const simplifyStrength = getVisionNumericControl(visionSimplifySlider, 5);
+    const dedupeDistance = Math.max(0.35, Math.min(1.25, simplifyStrength * 0.12));
+    const deduped = dedupePolyline(points, dedupeDistance);
+    if (deduped.length <= 2) return deduped;
+
+    const bounds = getPolylineBounds(deduped);
+    const diag = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+    const closed = isClosedPolyline(deduped);
+    const epsilon = closed
+        ? Math.max(0.55, Math.min(3.2, diag * (0.0025 + simplifyStrength * 0.0009)))
+        : Math.max(0.65, Math.min(8, diag * (0.004 + simplifyStrength * 0.0016) + deduped.length * 0.003));
+    const simplified = simplifyRdp(deduped, epsilon);
+    if (simplified.length < 2) return deduped;
+    if (closed && simplified.length < 8 && deduped.length >= 8) return deduped;
+    return simplified;
+}
+
+function pointsToLineSvgPath(points) {
+    if (!points.length) return "";
+    return points.map((point, index) => {
+        const prefix = index === 0 ? "M" : "L";
+        return `${prefix} ${formatSvgNum(point.x)},${formatSvgNum(point.y)}`;
+    }).join(' ');
+}
+
+const VISION_PATH_STYLES = {
+    thru_cut: { stroke: "#3b82f6" },
+    score: { stroke: "#ef4444" },
+    crease: { stroke: "#22c55e" }
+};
+
+function buildVisionTraceSvg(groupedPaths, width, height) {
+    let svgText = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}px" height="${height}px">\n`;
+    for (const method of ["thru_cut", "score", "crease"]) {
+        if (!groupedPaths[method]?.length) continue;
+        const d = groupedPaths[method].map(pointsToLineSvgPath).filter(Boolean).join(' ');
+        if (!d) continue;
+        svgText += `  <path d="${d}" fill="none" stroke="${VISION_PATH_STYLES[method].stroke}" stroke-width="1" vector-effect="non-scaling-stroke" data-method="${method}"/>\n`;
+    }
+    return `${svgText}</svg>`;
+}
+
+function getBedSizeMM() {
+    return {
+        bedW: parseFloat(document.getElementById('bedWidthInput')?.value) || 770,
+        bedH: parseFloat(document.getElementById('bedHeightInput')?.value) || 960
+    };
+}
+
+function hasUsableVisionMeta(meta) {
+    return Number.isFinite(Number(meta?.dots_per_mm)) && Number(meta.dots_per_mm) > 0
+        && Number.isFinite(Number(meta?.physical_width)) && Number(meta.physical_width) > 0
+        && Number.isFinite(Number(meta?.physical_height)) && Number(meta.physical_height) > 0;
+}
+
+function visionPixelPointToCanvasSvgPoint(point, meta, bedW, bedH) {
+    const dotsPerMM = Number(meta.dots_per_mm);
+    const physicalWidth = Number(meta.physical_width);
+    const physicalHeight = Number(meta.physical_height);
+    const machineX = physicalWidth - (point.x / dotsPerMM);
+    const machineY = physicalHeight - (point.y / dotsPerMM);
+    return {
+        x: bedW - machineX,
+        y: bedH - machineY
+    };
+}
+
+function buildVisionCanvasSvg(groupedPaths, urumiMeta) {
+    const { bedW, bedH } = getBedSizeMM();
+    let svgText = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bedW} ${bedH}" width="${bedW}mm" height="${bedH}mm" data-source="canvas">\n`;
+    for (const method of ["thru_cut", "score", "crease"]) {
+        if (!groupedPaths[method]?.length) continue;
+        const convertedPaths = groupedPaths[method]
+            .map(points => points.map(point => visionPixelPointToCanvasSvgPoint(point, urumiMeta, bedW, bedH)))
+            .map(pointsToLineSvgPath)
+            .filter(Boolean);
+        if (!convertedPaths.length) continue;
+        svgText += `  <path d="${convertedPaths.join(' ')}" fill="none" stroke="${VISION_PATH_STYLES[method].stroke}" stroke-width="1" vector-effect="non-scaling-stroke" data-method="${method}"/>\n`;
+    }
+    return `${svgText}</svg>`;
+}
+
+function parseSimpleSvgPathPoints(pathData) {
+    const numbers = pathData.match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) || [];
+    const points = [];
+    for (let i = 0; i + 1 < numbers.length; i += 2) {
+        points.push({ x: parseFloat(numbers[i]), y: parseFloat(numbers[i + 1]) });
+    }
+    return points.filter(point => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+
+    if (max === min) {
+        h = s = 0;
+    } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return { h: h * 360, s, l };
+}
+
+function getNeighborhoodInkColor(cData, x, y) {
+    let minL = 1.1;
+    let bestRgb = { r: 255, g: 255, b: 255 };
+    const rx = Math.round(x);
+    const ry = Math.round(y);
+
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const px = Math.max(0, Math.min(cData.width - 1, rx + dx));
+            const py = Math.max(0, Math.min(cData.height - 1, ry + dy));
+            const idx = (py * cData.width + px) * 4;
+            const r = cData.data[idx];
+            const g = cData.data[idx + 1];
+            const b = cData.data[idx + 2];
+            const maxVal = Math.max(r, g, b) / 255;
+            const minVal = Math.min(r, g, b) / 255;
+            const l = (maxVal + minVal) / 2;
+
+            if (l < minL) {
+                minL = l;
+                bestRgb = { r, g, b };
+            }
+        }
+    }
+    return bestRgb;
+}
+
+function classifyHsl(h, s) {
+    if (s < 0.12) return "neutral";
+    if (h >= 335 || h < 25) return "red";
+    if (h >= 75 && h < 160) return "green";
+    if (h >= 170 && h < 265) return "blue";
+    return "unknown";
+}
+
+function classifyVisionPolyline(points, colorData) {
+    const votes = { red: 0, blue: 0, green: 0, neutral: 0, unknown: 0 };
+    const sampleCount = Math.min(20, points.length);
+    for (let i = 0; i < sampleCount; i++) {
+        const idx = Math.floor(i * (points.length - 1) / (sampleCount - 1 || 1));
+        const point = points[idx];
+        const rgb = getNeighborhoodInkColor(colorData, point.x, point.y);
+        const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+        votes[classifyHsl(hsl.h, hsl.s)]++;
+    }
+
+    let dominantColor = "neutral";
+    let maxVotes = -1;
+    for (const color in votes) {
+        if (votes[color] > maxVotes) {
+            maxVotes = votes[color];
+            dominantColor = color;
+        }
+    }
+
+    if (dominantColor === "red") return "score";
+    if (dominantColor === "green") return "crease";
+    return "thru_cut";
+}
+
+function normalizeVisionMethod(method) {
+    if (method === "off_base" || method === "score" || method === "scoring") return "score";
+    if (method === "crease" || method === "thru_cut") return method;
+    return null;
+}
+
+async function processUrumiVisionAssets({ serverUrl = URUMI_VISION_SERVER_URL, payload = latestVisionPayload, sourceLabel = "Vision", destination = "trajectory" } = {}) {
+    const stamp = Date.now();
+    const svgUrl = visionAssetUrl(payload?.edges_svg_url || `/uploads/rectified_edges.svg?t=${stamp}`, serverUrl);
+    const colorUrl = visionAssetUrl(payload?.image_url || `/uploads/rectified_bed.png?t=${stamp}`, serverUrl);
+    const [svgRes, colorImg] = await Promise.all([
+        fetch(svgUrl),
+        loadVisionImage(colorUrl)
+    ]);
+
+    if (!svgRes.ok) {
+        throw new Error(`Failed to load detected trace (${svgRes.status})`);
+    }
+
+    const svgSource = await svgRes.text();
+    const parsedSvg = new DOMParser().parseFromString(svgSource, "image/svg+xml");
+    const sourcePaths = Array.from(parsedSvg.querySelectorAll('path'));
+    if (!sourcePaths.length) {
+        throw new Error("No detected paths found in rectified_edges.svg");
+    }
+
+    const colorCanvas = document.createElement('canvas');
+    colorCanvas.width = colorImg.width;
+    colorCanvas.height = colorImg.height;
+    const colorCtx = colorCanvas.getContext('2d');
+    colorCtx.drawImage(colorImg, 0, 0);
+    const colorData = colorCtx.getImageData(0, 0, colorImg.width, colorImg.height);
+
+    const minPathLength = getVisionNumericControl(visionMinPathSlider, 16);
+    const groupedPaths = {
+        thru_cut: [],
+        score: [],
+        crease: []
+    };
+    let keptCount = 0;
+    let sourcePointCount = 0;
+    let simplifiedPointCount = 0;
+
+    for (const path of sourcePaths) {
+        const points = parseSimpleSvgPathPoints(path.getAttribute('d') || '');
+        sourcePointCount += points.length;
+        if (points.length < 2 || polylineLength(points) < minPathLength) continue;
+
+        const simplifiedPoints = simplifyVisionPolyline(points);
+        if (simplifiedPoints.length < 2 || polylineLength(simplifiedPoints) < minPathLength) continue;
+
+        const method = normalizeVisionMethod(path.getAttribute('data-method')) || classifyVisionPolyline(points, colorData);
+        groupedPaths[method].push(simplifiedPoints);
+        simplifiedPointCount += simplifiedPoints.length;
+        keptCount++;
+    }
+
+    if (!keptCount) {
+        throw new Error("All detected paths were filtered out. Lower Min path and try importing again.");
+    }
+
+    const width = payload?.width_px || colorImg.width;
+    const height = payload?.height_px || colorImg.height;
+    const svgText = buildVisionTraceSvg(groupedPaths, width, height);
+    let urumiMeta = null;
+    if (payload?.dots_per_mm) {
+        urumiMeta = {
+            dots_per_mm: payload.dots_per_mm,
+            physical_width: payload.physical_width,
+            physical_height: payload.physical_height
+        };
+    } else {
+        try {
+            const metaRes = await fetch(visionAssetUrl(`/uploads/metadata.json?t=${stamp}`, serverUrl));
+            if (metaRes.ok) {
+                const meta = await metaRes.json();
+                urumiMeta = {
+                    dots_per_mm: meta.dots_per_mm,
+                    physical_width: meta.physical_width,
+                    physical_height: meta.physical_height
+                };
+            }
+        } catch (err) { }
+    }
+
+    if (destination === "canvas") {
+        if (!canvasEditor) throw new Error("Drawing canvas is not ready.");
+        if (!hasUsableVisionMeta(urumiMeta)) {
+            throw new Error("Missing scanner scale data, so the trace cannot be placed accurately in Draw.");
+        }
+
+        const { bedW, bedH } = getBedSizeMM();
+        drawViewState.bedW = bedW;
+        drawViewState.bedH = bedH;
+        const canvasSvgText = buildVisionCanvasSvg(groupedPaths, urumiMeta);
+        canvasEditor.importSVG(canvasSvgText);
+        selectDrawTool('select');
+        if (window.switchTab) {
+            window.switchTab('draw');
+        }
+        drawBridge.activate();
+        log(`${sourceLabel}: added ${keptCount}/${sourcePaths.length} traced paths to the drawing canvas.`, "success");
+        setVisionStatus(`Added ${keptCount} paths to Draw. ${sourcePointCount} points simplified to ${simplifiedPointCount}.`, "success");
+        return;
+    }
+
+    const virtualFile = new File([svgText], "vision_trace.svg", { type: "image/svg+xml" });
+    log(`${sourceLabel}: imported ${keptCount}/${sourcePaths.length} paths, simplified ${sourcePointCount} points to ${simplifiedPointCount}.`, "success");
+    setVisionStatus(`Imported ${keptCount} paths. ${sourcePointCount} points simplified to ${simplifiedPointCount}.`, "success");
+    handleFile(virtualFile, onGCodeReady, window.switchTab, urumiMeta);
+
+    if (window.switchTab) {
+        window.switchTab('gcode-preview');
+    }
+}
+
+syncVisionTuningOutputs();
+visionSimplifySlider?.addEventListener('input', syncVisionTuningOutputs);
+visionMinPathSlider?.addEventListener('input', syncVisionTuningOutputs);
+btnVisionRefreshQr?.addEventListener('click', generateVisionQrCode);
+
+btnVisionUpload?.addEventListener('click', () => visionPhotoInput?.click());
+
+visionPhotoInput?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+        setVisionStatus("Uploading and rectifying photo...");
+        if (btnVisionUpload) btnVisionUpload.disabled = true;
+        if (btnVisionImport) btnVisionImport.disabled = true;
+        if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
+
+        const form = new FormData();
+        form.append("image", file);
+        const res = await fetch(`${URUMI_VISION_SERVER_URL}/api/method2/upload`, {
+            method: "POST",
+            body: form
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload.success) {
+            throw new Error(payload?.message || `Upload failed (${res.status})`);
+        }
+
+        applyVisionPayload(payload, `Ready: ${payload.width_px} x ${payload.height_px}px, ${Number(payload.dots_per_mm || 0).toFixed(2)} px/mm.`);
+        log("Vision photo processed. Review the previews, then import the trace.", "success");
+    } catch (err) {
+        setVisionStatus(err.message, "error");
+        log(`Vision upload failed: ${err.message}`, "error");
+    } finally {
+        if (btnVisionUpload) btnVisionUpload.disabled = false;
+        event.target.value = "";
+    }
+});
+
+btnVisionImport?.addEventListener('click', async () => {
+    try {
+        setVisionStatus("Importing simplified trace...");
+        if (btnVisionImport) btnVisionImport.disabled = true;
+        if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
+        await processUrumiVisionAssets({ payload: latestVisionPayload });
+    } catch (err) {
+        setVisionStatus(err.message, "error");
+        log(`Vision import failed: ${err.message}`, "error");
+    } finally {
+        if (btnVisionImport) btnVisionImport.disabled = !latestVisionPayload;
+        if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = !latestVisionPayload;
+    }
+});
+
+btnVisionImportCanvas?.addEventListener('click', async () => {
+    try {
+        setVisionStatus("Adding trace to drawing canvas...");
+        if (btnVisionImport) btnVisionImport.disabled = true;
+        if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
+        await processUrumiVisionAssets({ payload: latestVisionPayload, destination: "canvas" });
+    } catch (err) {
+        setVisionStatus(err.message, "error");
+        log(`Vision draw import failed: ${err.message}`, "error");
+    } finally {
+        if (btnVisionImport) btnVisionImport.disabled = !latestVisionPayload;
+        if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = !latestVisionPayload;
+    }
+});
+
+btnVisionReset?.addEventListener('click', () => {
+    latestVisionPayload = null;
+    if (btnVisionImport) btnVisionImport.disabled = true;
+    if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
+    if (visionRectifiedPreview) visionRectifiedPreview.removeAttribute('src');
+    if (visionMaskPreview) visionMaskPreview.removeAttribute('src');
+    if (visionEdgesPreview) visionEdgesPreview.removeAttribute('src');
+    if (visionStageEmpty) visionStageEmpty.classList.remove('hidden');
+    setVisionMeta(null);
+    setVisionStage("setup");
+    setVisionStatus("Waiting for a bed photo.");
+    generateVisionQrCode();
+});
+
+setVisionStage("setup");
+generateVisionQrCode();
+
 // --- Real-time UrumiCam SVG Push Listener ---
 function setupUrumiCamPushListener() {
-    const serverUrl = "http://localhost:5000";
+    const serverUrl = URUMI_VISION_SERVER_URL;
 
     // Dynamic Socket.IO client library loader
     function loadSocketIO() {
@@ -1356,7 +2047,24 @@ function setupUrumiCamPushListener() {
             console.log("[UrumiCam Bridge] Connected to UrumiCam background listener.");
         });
 
+        socket.on('bed_rectified', (payload) => {
+            applyVisionPayload(payload, "Phone upload received. Review it, then import the trace.");
+            log("Vision photo received from mobile upload.", "success");
+            if (window.switchTab) {
+                window.switchTab('vision');
+            }
+        });
+
         socket.on('import_svg_in_cutter', async (data) => {
+            try {
+                if (data && data.error) throw new Error(data.error);
+                log("[UrumiCam Bridge] Received push; importing simplified trace in UrumiCutter.", "info");
+                await processUrumiVisionAssets({ serverUrl, sourceLabel: "UrumiCam Bridge" });
+            } catch (e) {
+                log(`UrumiCam bridge import failed: ${e.message}`, "error");
+            }
+            return;
+
             log("[UrumiCam Bridge] Received real-time push from UrumiCam! Tracing skeleton...", "info");
 
             try {
@@ -1641,7 +2349,7 @@ function setupUrumiCamPushListener() {
                     if (dominantColor === "blue") {
                         method = "thru_cut";
                     } else if (dominantColor === "red") {
-                        method = "off_base";
+                        method = "score";
                     } else if (dominantColor === "green") {
                         method = "crease";
                     } else {
@@ -1655,7 +2363,7 @@ function setupUrumiCamPushListener() {
 
                     if (method === "thru_cut") {
                         thruCutPaths.push(pathD);
-                    } else if (method === "off_base") {
+                    } else if (method === "score" || method === "off_base") {
                         offBasePaths.push(pathD);
                     } else if (method === "crease") {
                         creasePaths.push(pathD);
@@ -1664,13 +2372,13 @@ function setupUrumiCamPushListener() {
 
                 let svgText = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${maskImg.width} ${maskImg.height}" width="${maskImg.width}px" height="${maskImg.height}px">\n`;
                 if (thruCutPaths.length > 0) {
-                    svgText += `  <path d="${thruCutPaths.join(' ')}" fill="none" stroke="#3b82f6" stroke-width="2" vector-effect="non-scaling-stroke" data-method="thru_cut"/>\n`;
+                    svgText += `  <path d="${thruCutPaths.join(' ')}" fill="none" stroke="#3b82f6" stroke-width="1" vector-effect="non-scaling-stroke" data-method="thru_cut"/>\n`;
                 }
                 if (offBasePaths.length > 0) {
-                    svgText += `  <path d="${offBasePaths.join(' ')}" fill="none" stroke="#8b5cf6" stroke-width="2" vector-effect="non-scaling-stroke" data-method="off_base"/>\n`;
+                    svgText += `  <path d="${offBasePaths.join(' ')}" fill="none" stroke="#ef4444" stroke-width="1" vector-effect="non-scaling-stroke" data-method="score"/>\n`;
                 }
                 if (creasePaths.length > 0) {
-                    svgText += `  <path d="${creasePaths.join(' ')}" fill="none" stroke="#f59e0b" stroke-width="2" vector-effect="non-scaling-stroke" data-method="crease"/>\n`;
+                    svgText += `  <path d="${creasePaths.join(' ')}" fill="none" stroke="#22c55e" stroke-width="1" vector-effect="non-scaling-stroke" data-method="crease"/>\n`;
                 }
                 svgText += `</svg>`;
 
@@ -1723,7 +2431,7 @@ function getAxisSteps(inputId, fallback) {
 
 const retriggerConversion = () => {
     if (state.gcode && !document.getElementById('canvasContainer').classList.contains('hidden')) {
-        renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, -1, state.binaryPackets);
+        renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, -1, state.binaryPackets, state.packetMeta);
     }
     if (state.currentFile && state.currentFile.name.toLowerCase().endsWith('.svg')) {
         log('Re-calculating trajectory with new settings...', 'info');
@@ -2006,6 +2714,7 @@ function goToZero() {
     // Stream the move (if any) then `setorigin` to re-establish the firmware zero.
     if (cmds.length > 0) {
         state.binaryPackets = cmds;
+        state.packetMeta = [];
         state.gcodeQueue = ['__BINARY_STREAM__', 'setorigin'];
     } else {
         state.gcodeQueue = ['setorigin'];
@@ -2065,8 +2774,8 @@ function handleJogKey(e) {
  * @returns {Array<number>} List of active zone IDs (1-6).
  */
 function calculateActiveZones(gcode, packets = []) {
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960;
 
     const lines = gcode.split('\n');
     let cur = { x: 0, y: 0 };

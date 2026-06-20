@@ -47,8 +47,185 @@
  * - If it's an SVG file: We have to do a lot of math to convert it to G-code.
  */
 
-import SvgConverter from './SvgConverter.js?v=5';
+import SvgConverter from './SvgConverter.js?v=6';
 import { log } from './Console.js';
+
+function parseEmbeddedUrumiMeta(svg) {
+    const metaEl = Array.from(svg.querySelectorAll('meta'))
+        .find(el => el.getAttribute('name') === 'urumi-scanner');
+    if (!metaEl) return null;
+
+    try {
+        const meta = JSON.parse(metaEl.getAttribute('content') || '{}');
+        const dotsPerMM = Number(meta.dots_per_mm);
+        const physicalWidth = Number(meta.physical_width);
+        const physicalHeight = Number(meta.physical_height);
+        if (!Number.isFinite(dotsPerMM) || dotsPerMM <= 0) return null;
+        if (!Number.isFinite(physicalWidth) || physicalWidth <= 0) return null;
+        if (!Number.isFinite(physicalHeight) || physicalHeight <= 0) return null;
+        return {
+            dots_per_mm: dotsPerMM,
+            physical_width: physicalWidth,
+            physical_height: physicalHeight
+        };
+    } catch (err) {
+        log(`Ignoring unreadable scanner metadata: ${err.message}`, 'warning');
+        return null;
+    }
+}
+
+function tokenizePathData(d) {
+    return d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:e[-+]?\d+)?/g) || [];
+}
+
+function parsePolylinePathData(d) {
+    const tokens = tokenizePathData(d);
+    const subpaths = [];
+    let points = [];
+    let closed = false;
+    let i = 0;
+
+    while (i < tokens.length) {
+        const command = tokens[i++];
+        if (!command || !/[a-zA-Z]/.test(command)) return null;
+        const type = command.toUpperCase();
+        if (command !== type || (type !== 'M' && type !== 'L' && type !== 'Z')) return null;
+
+        if (type === 'Z') {
+            closed = true;
+            continue;
+        }
+
+        const x = Number(tokens[i++]);
+        const y = Number(tokens[i++]);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+        if (type === 'M' && points.length) {
+            subpaths.push({ points, closed });
+            points = [];
+            closed = false;
+        }
+        points.push({ x, y });
+    }
+
+    if (points.length) subpaths.push({ points, closed });
+    return subpaths.length ? subpaths : null;
+}
+
+function pointSegmentDistance(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    if (dx === 0 && dy === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+
+    const rawT = ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy);
+    const t = Math.max(0, Math.min(1, rawT));
+    return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
+}
+
+function simplifyPolyline(points, tolerancePx) {
+    if (points.length <= 2) return points;
+
+    let maxDistance = 0;
+    let splitIndex = 0;
+    for (let i = 1; i < points.length - 1; i++) {
+        const distance = pointSegmentDistance(points[i], points[0], points[points.length - 1]);
+        if (distance > maxDistance) {
+            maxDistance = distance;
+            splitIndex = i;
+        }
+    }
+
+    if (maxDistance <= tolerancePx) return [points[0], points[points.length - 1]];
+
+    const first = simplifyPolyline(points.slice(0, splitIndex + 1), tolerancePx);
+    const second = simplifyPolyline(points.slice(splitIndex), tolerancePx);
+    return first.slice(0, -1).concat(second);
+}
+
+function pointDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function smoothClosedPolyline(points, iterations = 1) {
+    if (points.length < 8) return points;
+
+    let closedPoints = points.slice();
+    const hadDuplicateClose = pointDistance(closedPoints[0], closedPoints[closedPoints.length - 1]) < 0.001;
+    if (hadDuplicateClose) closedPoints = closedPoints.slice(0, -1);
+
+    let smoothed = closedPoints;
+    for (let iter = 0; iter < iterations; iter++) {
+        smoothed = smoothed.map((point, idx) => {
+            const prev = smoothed[(idx - 1 + smoothed.length) % smoothed.length];
+            const next = smoothed[(idx + 1) % smoothed.length];
+            return {
+                x: (prev.x * 0.25) + (point.x * 0.5) + (next.x * 0.25),
+                y: (prev.y * 0.25) + (point.y * 0.5) + (next.y * 0.25)
+            };
+        });
+    }
+
+    if (hadDuplicateClose) smoothed.push({ ...smoothed[0] });
+    return smoothed;
+}
+
+function simplifyClosedPolyline(points) {
+    return smoothClosedPolyline(points, 1);
+}
+
+function pointsChanged(a, b) {
+    if (a.length !== b.length) return true;
+    return a.some((point, idx) => pointDistance(point, b[idx]) > 0.01);
+}
+
+function formatSvgNumber(value) {
+    return Number(value.toFixed(2)).toString();
+}
+
+function simplifyScannerSvgPaths(svg, meta) {
+    const tolerancePx = Math.max(1.5, Math.min(4, meta.dots_per_mm * 0.3));
+    const closedTolerancePx = Math.max(0.45, Math.min(0.8, meta.dots_per_mm * 0.09));
+    let beforePoints = 0;
+    let afterPoints = 0;
+    let changedPaths = 0;
+
+    svg.querySelectorAll('path').forEach(path => {
+        const d = path.getAttribute('d');
+        if (!d) return;
+
+        const subpaths = parsePolylinePathData(d);
+        if (!subpaths) return;
+
+        const parts = [];
+        let changed = false;
+        subpaths.forEach(({ points, closed }) => {
+            beforePoints += points.length;
+            const minimum = closed ? 3 : 2;
+            const simplified = points.length > minimum
+                ? (closed ? simplifyClosedPolyline(points, closedTolerancePx) : simplifyPolyline(points, tolerancePx))
+                : points;
+            const safePoints = simplified.length >= minimum ? simplified : points;
+            afterPoints += safePoints.length;
+            if (pointsChanged(safePoints, points)) changed = true;
+
+            if (!safePoints.length) return;
+            const [first, ...rest] = safePoints;
+            const commands = [`M ${formatSvgNumber(first.x)} ${formatSvgNumber(first.y)}`];
+            rest.forEach(point => {
+                commands.push(`L ${formatSvgNumber(point.x)} ${formatSvgNumber(point.y)}`);
+            });
+            if (closed) commands.push('Z');
+            parts.push(commands.join(' '));
+        });
+
+        if (parts.length) {
+            path.setAttribute('d', parts.join(' '));
+            if (changed) changedPaths += 1;
+        }
+    });
+
+    return { beforePoints, afterPoints, changedPaths, tolerancePx, closedTolerancePx };
+}
 
 /**
  * Process an uploaded file (SVG or GCode).
@@ -63,6 +240,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
     
     try {
         const text = await file.text();
+        let conversionText = text;
+        let resolvedUrumiMeta = urumiMeta;
 
         // --- CASE 1: SVG FILE ---
         if (file.name.toLowerCase().endsWith('.svg')) {
@@ -71,6 +250,28 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             const parser = new DOMParser();
             const doc = parser.parseFromString(text, 'image/svg+xml');
             const svg = doc.querySelector('svg');
+
+            if (svg) {
+                const embeddedMeta = parseEmbeddedUrumiMeta(svg);
+                if (!resolvedUrumiMeta && embeddedMeta) {
+                    resolvedUrumiMeta = embeddedMeta;
+                    log(
+                        `Scanner SVG metadata detected (${embeddedMeta.physical_width.toFixed(1)}x${embeddedMeta.physical_height.toFixed(1)}mm, ${embeddedMeta.dots_per_mm.toFixed(2)} px/mm)`,
+                        'info'
+                    );
+                }
+
+                if (resolvedUrumiMeta && embeddedMeta) {
+                    const stats = simplifyScannerSvgPaths(svg, resolvedUrumiMeta);
+                    conversionText = new XMLSerializer().serializeToString(svg);
+                    if (stats.changedPaths > 0) {
+                        log(
+                            `Refined scanner paths: ${stats.beforePoints} -> ${stats.afterPoints} points (open ${stats.tolerancePx.toFixed(1)}px, closed ${stats.closedTolerancePx.toFixed(1)}px)`,
+                            'info'
+                        );
+                    }
+                }
+            }
 
             // 2. Show the raw SVG in the "SVG Preview" tab
             if (svg) {
@@ -86,8 +287,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             // 3. Determine Dimensions (Complex!)
             // SVGs can use mm, cm, in, px, or no units at all.
             // We try to find the "Real World" size of the drawing.
-            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960;
-            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770;
+            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770;
+            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960;
             let w_mm = 0, h_mm = 0;
             let viewbox = [0, 0, 0, 0];
 
@@ -134,17 +335,17 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             if (vbW === 0) vbW = w_mm;
             if (vbH === 0) vbH = h_mm;
 
-            if (urumiMeta) {
+            if (resolvedUrumiMeta) {
                 // Direct physical mapping from UrumiCam bed scanner
-                scale = 1.0 / urumiMeta.dots_per_mm;
+                scale = 1.0 / resolvedUrumiMeta.dots_per_mm;
 
                 // The machine's physical origin is bottom-right, so camera-space
                 // X and Y must both be mirrored into machine-space.
-                finalOffsetX = urumiMeta.physical_width;
-                finalOffsetY = urumiMeta.physical_height;
+                finalOffsetX = resolvedUrumiMeta.physical_width;
+                finalOffsetY = resolvedUrumiMeta.physical_height;
 
-                finalW = urumiMeta.physical_width;
-                finalH = urumiMeta.physical_height;
+                finalW = resolvedUrumiMeta.physical_width;
+                finalH = resolvedUrumiMeta.physical_height;
                 log(`Direct visual alignment loaded: ${finalW.toFixed(1)}x${finalH.toFixed(1)}mm gantry bed at origin`, 'success');
             } else {
                 const isCanvas = svg.getAttribute('data-source') === 'canvas';
@@ -203,8 +404,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             // Canvas SVGs and UrumiCam Captures:
             // Both need the machine's true bottom-right origin, so force both flips.
             // The inversion checkboxes apply only to externally-loaded SVG files.
-            const isCanvasSrc = !urumiMeta && svg && svg.getAttribute('data-source') === 'canvas';
-            if (isCanvasSrc || urumiMeta) {
+            const isCanvasSrc = !resolvedUrumiMeta && svg && svg.getAttribute('data-source') === 'canvas';
+            if (isCanvasSrc || resolvedUrumiMeta) {
                 flipX = true;
                 flipY = true;
             }
@@ -271,7 +472,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     docW: finalW,
                     docH: finalH
                 });
-                const result = converter.convert(text);
+                const result = converter.convert(conversionText);
                 
                 onGCodeReady(result, stepsPerMM_X);
                 log(`Converted (Size: ${finalW.toFixed(1)}x${finalH.toFixed(1)}mm)`, 'success');

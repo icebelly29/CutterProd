@@ -7,6 +7,7 @@
  * 2. SVG Preview
  * 3. Data Editor
  * 4. Draw (CanvasEditor)
+ * 5. Vision
  *
  * Uses the hidden-class technique — all panels exist simultaneously,
  * CSS controls visibility.
@@ -25,8 +26,9 @@ export function setupTabs(getState, drawBridge = null) {
 
         // 1. Update tab button active state
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        const activeTab = Array.from(document.querySelectorAll('.tab'))
-            .find(t => t.innerText.toLowerCase().includes(tabName.split('-')[0]));
+        const activeTab = document.querySelector(`.tab[data-tab="${tabName}"]`) ||
+            Array.from(document.querySelectorAll('.tab'))
+                .find(t => t.innerText.toLowerCase().includes(tabName.split('-')[0]));
         if (activeTab) activeTab.classList.add('active');
 
         // 2. Hide all panels
@@ -49,7 +51,7 @@ export function setupTabs(getState, drawBridge = null) {
             if (hasPaths) {
                 document.getElementById('emptyState').classList.add('hidden');
                 document.getElementById('canvasContainer').classList.remove('hidden');
-                setTimeout(() => renderGCode(state.gcode || '', 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, -1, state.binaryPackets), 10);
+                setTimeout(() => renderGCode(state.gcode || '', 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex ?? -1, state.binaryPackets, state.packetMeta), 10);
             } else {
                 document.getElementById('emptyState').classList.remove('hidden');
                 document.getElementById('canvasContainer').classList.add('hidden');
@@ -70,6 +72,10 @@ export function setupTabs(getState, drawBridge = null) {
             if (drawBridge) {
                 setTimeout(() => drawBridge.activate(), 10);
             }
+        }
+
+        if (tabName === 'vision') {
+            document.getElementById('visionPanel')?.classList.remove('hidden');
         }
     };
 }

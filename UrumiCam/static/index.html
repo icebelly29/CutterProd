@@ -69,12 +69,12 @@
             <div class="camera-section">
             <!-- Method Switcher Tabs -->
             <div class="method-tabs">
-                <button class="method-tab active" id="tabMethod1">Method 1: Gantry Cam</button>
-                <button class="method-tab" id="tabMethod2">Method 2: Mobile Photo</button>
+                <button class="method-tab active" id="tabMethod2">Mobile Photo</button>
+                <button class="method-tab" id="tabMethod1">Gantry Cam</button>
             </div>
 
             <!-- Panel for Method 1: Gantry Camera -->
-            <div class="camera-feed" id="cameraFeed">
+            <div class="camera-feed hidden" id="cameraFeed">
                 <canvas id="cameraCanvas"></canvas>
                 <div class="camera-overlay">
                     <div class="crosshair crosshair-h"></div>
@@ -89,7 +89,7 @@
             </div>
 
             <!-- Panel for Method 2: Mobile ArUco Bed Workspace -->
-            <div class="method2-workspace hidden" id="method2Workspace">
+            <div class="method2-workspace" id="method2Workspace">
                 <!-- Setup Screen (waiting for upload, show QR + direct desktop uploader) -->
                 <div class="method2-setup" id="method2Setup">
                     <div class="qr-box">

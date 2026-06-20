@@ -50,7 +50,7 @@
  * @param {number} activePathIndex - Index of the last executed path segment (for animation).
  * @param {Uint8Array[]} [packets] - Binary MicroSegment packets from SvgConverter.
  */
-export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canvasContainer', stepsPerMM = 1.0, activePathIndex = -1, packets = null) {
+export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canvasContainer', stepsPerMM = 1.0, activePathIndex = -1, packets = null, packetMeta = []) {
     const canvas = document.getElementById(canvasId);
     const container = document.getElementById(containerId);
     if (!canvas || !container) return;
@@ -58,8 +58,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     const ctx = canvas.getContext('2d');
 
     // --- 1. Setup Dimensions ---
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 960; // Machine Width (mm)
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 770; // Machine Height (mm)
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770; // Machine Width (mm)
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960; // Machine Height/Length (mm)
     const gantryW = parseFloat(document.getElementById('gantryWidthInput')?.value) || 210; // Gantry Width (mm)
     const gantryH = parseFloat(document.getElementById('gantryHeightInput')?.value) || 180; // Gantry Height (mm)
 
@@ -73,8 +73,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
         canvas.height = rect.height;
     } else if (canvas.width < 10 || canvas.height < 10) {
         // First render ever while hidden — use a default
-        canvas.width  = 960;
-        canvas.height = 640;
+        canvas.width  = 770;
+        canvas.height = 960;
     }
     // else: canvas retains its previous size from the last visible render
 
@@ -255,8 +255,11 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
 
         let pkCur = { x: 0, y: 0 };
         let pkPenDown = false;
+        const ranges = Array.isArray(packetMeta) ? packetMeta : [];
+        let rangeIndex = 0;
 
-        for (const pkt of packets) {
+        for (let packetIndex = 0; packetIndex < packets.length; packetIndex++) {
+            const pkt = packets[packetIndex];
             if (pkt.length < 22) continue;
             const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
             const magic = view.getUint8(0);
@@ -273,13 +276,17 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
             const mmX = dx / spmX;
             const mmY = dy / spmY;
             const next = { x: pkCur.x + mmX, y: pkCur.y + mmY };
+            while (rangeIndex < ranges.length && packetIndex > ranges[rangeIndex].end) {
+                rangeIndex++;
+            }
+            const meta = ranges[rangeIndex];
 
             paths.push({
                 type: pkPenDown ? 'cut' : 'move',
                 from: { ...pkCur },
                 to:   { ...next },
-                shapeId: null,
-                method: 'thru_cut'
+                shapeId: meta && packetIndex >= meta.start && packetIndex <= meta.end ? meta.shapeId : null,
+                method: meta && packetIndex >= meta.start && packetIndex <= meta.end ? meta.method : 'thru_cut'
             });
             pkCur = next;
         }
@@ -297,7 +304,83 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     const availableH = canvas.height - padding * 2;
     const dataW = bedW;
     const dataH = bedH;
-    const scale = Math.min(availableW / dataW, availableH / dataH);
+    const baseScale = Math.min(availableW / dataW, availableH / dataH);
+
+    if (!canvas._trajectoryViewport) {
+        canvas._trajectoryViewport = {
+            zoom: 1,
+            panX: 0,
+            panY: 0,
+            dragging: false,
+            dragX: 0,
+            dragY: 0
+        };
+    }
+    const viewport = canvas._trajectoryViewport;
+    canvas._renderTrajectory = () => renderGCode(gcode, canvasId, containerId, stepsPerMM, activePathIndex, packets, packetMeta);
+
+    if (!canvas._trajectoryControlsReady) {
+        canvas._trajectoryControlsReady = true;
+        canvas.addEventListener('wheel', (event) => {
+            event.preventDefault();
+            const vp = canvas._trajectoryViewport;
+            const rectNow = canvas.getBoundingClientRect();
+            const pointerX = event.clientX - rectNow.left;
+            const pointerY = event.clientY - rectNow.top;
+            const oldZoom = vp.zoom;
+            const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+            const newZoom = Math.max(0.25, Math.min(12, oldZoom * zoomFactor));
+            const factor = newZoom / oldZoom;
+            const centerNowX = canvas.width / 2;
+            const centerNowY = canvas.height / 2;
+
+            vp.panX = pointerX - centerNowX - (pointerX - centerNowX - vp.panX) * factor;
+            vp.panY = pointerY - centerNowY - (pointerY - centerNowY - vp.panY) * factor;
+            vp.zoom = newZoom;
+            canvas._renderTrajectory?.();
+        }, { passive: false });
+
+        canvas.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 && event.button !== 1) return;
+            event.preventDefault();
+            const vp = canvas._trajectoryViewport;
+            vp.dragging = true;
+            vp.dragX = event.clientX;
+            vp.dragY = event.clientY;
+            canvas.setPointerCapture?.(event.pointerId);
+            canvas.classList.add('is-panning');
+        });
+
+        canvas.addEventListener('pointermove', (event) => {
+            const vp = canvas._trajectoryViewport;
+            if (!vp.dragging) return;
+            event.preventDefault();
+            vp.panX += event.clientX - vp.dragX;
+            vp.panY += event.clientY - vp.dragY;
+            vp.dragX = event.clientX;
+            vp.dragY = event.clientY;
+            canvas._renderTrajectory?.();
+        });
+
+        const endPan = (event) => {
+            const vp = canvas._trajectoryViewport;
+            vp.dragging = false;
+            canvas.releasePointerCapture?.(event.pointerId);
+            canvas.classList.remove('is-panning');
+        };
+        canvas.addEventListener('pointerup', endPan);
+        canvas.addEventListener('pointercancel', endPan);
+        canvas.addEventListener('dblclick', (event) => {
+            event.preventDefault();
+            const vp = canvas._trajectoryViewport;
+            vp.zoom = 1;
+            vp.panX = 0;
+            vp.panY = 0;
+            canvas._renderTrajectory?.();
+        });
+    }
+
+    const scale = baseScale * viewport.zoom;
 
     // Center the bounding box in the canvas
     const centerX = (minX + maxX) / 2;
@@ -308,8 +391,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     // --- 4. Coordinate Mapper Functions ---
     // Machine space uses the real hardware frame:
     // origin at bottom-right, +X left, +Y up.
-    const mapX = (x) => canvasCenterX + (centerX - x) * scale;
-    const mapY = (y) => canvasCenterY + (centerY - y) * scale;
+    const mapX = (x) => canvasCenterX + viewport.panX + (centerX - x) * scale;
+    const mapY = (y) => canvasCenterY + viewport.panY + (centerY - y) * scale;
 
     // --- 5. Draw! ---
     ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear screen
@@ -364,11 +447,11 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
                 dotColor = '#10b981';
             } else {
                 if (p.method === 'crease') {
-                    strokeColor = '#f59e0b'; // amber/orange for crease
-                    dotColor = '#d97706';
-                } else if (p.method === 'off_base') {
-                    strokeColor = '#8b5cf6'; // purple for off base
-                    dotColor = '#7c3aed';
+                    strokeColor = '#22c55e'; // green for crease
+                    dotColor = '#16a34a';
+                } else if (p.method === 'off_base' || p.method === 'score' || p.method === 'scoring') {
+                    strokeColor = '#ef4444'; // red for score
+                    dotColor = '#dc2626';
                 } else {
                     strokeColor = '#3b82f6'; // blue for thru cut
                     dotColor = '#2563eb';
@@ -388,61 +471,17 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
         }
     });
 
-    // --- Interactive Selection (Click to select shape) ---
-    // Remove old listener if exists
-    if (canvas._clickHandler) {
-        canvas.removeEventListener('click', canvas._clickHandler);
-    }
-    
-    canvas._clickHandler = (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        
-        // Point-to-segment distance helper
-        const distToSegmentSq = (px, py, x1, y1, x2, y2) => {
-            const l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
-            if (l2 === 0) return (px - x1) * (px - x1) + (py - y1) * (py - y1);
-            let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
-            t = Math.max(0, Math.min(1, t));
-            const projX = x1 + t * (x2 - x1);
-            const projY = y1 + t * (y2 - y1);
-            return (px - projX) * (px - projX) + (py - projY) * (py - projY);
-        };
-
-        const hitRadiusSq = 100; // 10px radius
-        let clickedPath = null;
-        let minDistSq = Infinity;
-
-        for (const p of paths) {
-            if (p.type === 'cut' && p.shapeId) {
-                const startX = mapX(p.from.x);
-                const startY = mapY(p.from.y);
-                const endX = mapX(p.to.x);
-                const endY = mapY(p.to.y);
-                
-                const dSq = distToSegmentSq(mouseX, mouseY, startX, startY, endX, endY);
-                if (dSq < hitRadiusSq && dSq < minDistSq) {
-                    minDistSq = dSq;
-                    clickedPath = p;
-                }
-            }
-        }
-
-        if (clickedPath) {
-            const event = new CustomEvent('shapeClicked', { 
-                detail: { shapeId: clickedPath.shapeId, method: clickedPath.method } 
-            });
-            canvas.dispatchEvent(event);
-        }
-    };
-    
-    canvas.addEventListener('click', canvas._clickHandler);
-
     // Draw Gantry Footprint
     if (paths.length > 0) {
-        // Gantry is centered on the current tool position (cur) or the active path position
-        let gantryCenter = cur;
+        // Gantry is centered on the executed segment endpoint during live/sim progress.
+        // Before execution starts, show it at machine origin instead of the final parsed path endpoint.
+        let gantryCenter = { x: 0, y: 0 };
+        if (activePathIndex >= 0) {
+            const activeSegment = paths[Math.min(activePathIndex, paths.length - 1)];
+            if (activeSegment) {
+                gantryCenter = activeSegment.to;
+            }
+        }
         // Top-right in machine space becomes top-left in canvas space after X inversion.
         const gantryRight_machine = gantryCenter.x + gantryW / 2;
         const gantryTop_machine = gantryCenter.y + gantryH / 2;

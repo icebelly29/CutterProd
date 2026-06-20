@@ -259,14 +259,14 @@ Add `data-method` to any shape element to control cutting behavior:
 <!-- Standard full-depth cut (default) -->
 <path d="M0,0 L100,0" data-method="thru_cut" />
 
-<!-- Score/fold line — cuts slightly shallower (zDown + 2mm) -->
+<!-- Crease/fold line -->
 <path d="M0,0 L100,0" data-method="crease" />
 
-<!-- Kiss-cut on a sticker sheet — cuts slightly deeper than crease but not all the way through (zDown + 1mm) -->
-<path d="M0,0 L100,0" data-method="off_base" />
+<!-- Score line: red ink from vision maps here -->
+<path d="M0,0 L100,0" data-method="score" />
 ```
 
-**Automatic ordering:** When both `crease` and `thru_cut`/`off_base` shapes are present, the converter **always processes crease shapes first**, then injects a `PAUSE_FOR_TOOL_CHANGE` marker in the preamble before processing cuts. This prevents tearing on folded packaging designs.
+**Automatic ordering:** When both `crease` and `thru_cut`/`score` shapes are present, the converter **always processes crease shapes first**, with tool-change pauses before and after the crease pass. This prevents tearing on folded packaging designs.
 
 ### Group Transforms
 

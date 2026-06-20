@@ -57,6 +57,24 @@ function makeBezier(x1, y1, cx1, cy1, cx2, cy2, x2, y2, strokeWidth) {
     return { id: makeId(), type: 'bezier', x1, y1, cx1, cy1, cx2, cy2, x2, y2, strokeWidth, method: 'thru_cut', name: 'Bezier' };
 }
 
+function normalizeMethod(method) {
+    const normalized = String(method || 'thru_cut').trim().toLowerCase();
+    if (normalized === 'score' || normalized === 'scoring' || normalized === 'off_base' || normalized === 'offbase') return 'score';
+    if (normalized === 'crease') return 'crease';
+    return 'thru_cut';
+}
+
+const PAGE_FRAMES = {
+    none: null,
+    a4: { label: 'A4', w: 210, h: 297 },
+    a3: { label: 'A3', w: 297, h: 420 },
+    a2: { label: 'A2', w: 420, h: 594 },
+    a1: { label: 'A1', w: 594, h: 841 },
+    a0: { label: 'A0', w: 841, h: 1189 },
+    letter: { label: 'Letter', w: 216, h: 279 },
+    tabloid: { label: 'Tabloid', w: 279, h: 432 }
+};
+
 // ─── SVG Path Serialisation ────────────────────────────────────────────────────
 
 // A simple Chaikin curve smoothing function
@@ -307,9 +325,10 @@ export class CanvasEditor {
         this.ctx      = canvas.getContext('2d');
         this.view     = viewState; // shared live object updated from Viewer metrics
         this.shapes   = [];
-        this.tool     = 'pencil';
+        this.tool     = 'select';
         this.strokeWidth = 1.5; // mm
         this.currentMethod = 'thru_cut';
+        this.pageFrame = { size: 'none', orientation: 'portrait' };
 
         // Interaction state
         this._isDown   = false;
@@ -383,9 +402,9 @@ export class CanvasEditor {
     }
     
     setCurrentMethod(method) {
-        this.currentMethod = method;
+        this.currentMethod = normalizeMethod(method);
         if (this._sel.length > 0) {
-            this.setShapeMethod(method);
+            this.setShapeMethod(this.currentMethod);
         }
     }
 
@@ -395,14 +414,22 @@ export class CanvasEditor {
 
     setStrokeWidth(w) { this.strokeWidth = w; }
     setEraserRadius(r) { this.eraserRadius = r; }
+    setPageFrame(size = 'none', orientation = 'portrait') {
+        this.pageFrame = {
+            size: PAGE_FRAMES[size] ? size : 'none',
+            orientation: orientation === 'landscape' ? 'landscape' : 'portrait'
+        };
+        this.draw();
+    }
 
     clearAll() { this.shapes = []; this._sel = []; this.draw(); }
 
     setShapeMethod(method) {
+        const normalizedMethod = normalizeMethod(method);
         if (this._sel.length > 0) {
             this.shapes.forEach(s => {
                 if (this._sel.includes(s.id)) {
-                    s.method = method;
+                    s.method = normalizedMethod;
                 }
             });
             this.draw();
@@ -910,6 +937,8 @@ export class CanvasEditor {
         ctx.rect(mapX(bedW), mapY(bedH), bedW * scale, bedH * scale);
         ctx.clip();
 
+        this._drawPageFrame(ctx, mapX, mapY, scale);
+
         for (const shape of this.shapes) {
             this._drawShape(ctx, shape, mapX, mapY, scale, this._sel.includes(shape.id));
         }
@@ -1002,6 +1031,50 @@ export class CanvasEditor {
         ctx.restore(); // Restore from bed boundaries clipping
     }
 
+    _drawPageFrame(ctx, mapX, mapY, scale) {
+        const frame = PAGE_FRAMES[this.pageFrame?.size || 'none'];
+        if (!frame) return;
+
+        const { bedW, bedH } = this.view;
+        const frameW = this.pageFrame.orientation === 'landscape' ? frame.h : frame.w;
+        const frameH = this.pageFrame.orientation === 'landscape' ? frame.w : frame.h;
+        const x = (bedW - frameW) / 2;
+        const y = (bedH - frameH) / 2;
+        const visibleW = Math.min(frameW, bedW);
+        const visibleH = Math.min(frameH, bedH);
+        const clampedX = Math.max(0, x);
+        const clampedY = Math.max(0, y);
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.74)';
+        ctx.strokeStyle = '#111827';
+        ctx.lineWidth = Math.max(1, 1.25);
+        ctx.setLineDash([]);
+        ctx.fillRect(mapX(clampedX + visibleW), mapY(clampedY + visibleH), visibleW * scale, visibleH * scale);
+        ctx.strokeRect(mapX(clampedX + visibleW), mapY(clampedY + visibleH), visibleW * scale, visibleH * scale);
+
+        ctx.strokeStyle = 'rgba(17, 24, 39, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 5]);
+        const margin = 10;
+        if (visibleW > margin * 2 && visibleH > margin * 2) {
+            ctx.strokeRect(
+                mapX(clampedX + visibleW - margin),
+                mapY(clampedY + visibleH - margin),
+                (visibleW - margin * 2) * scale,
+                (visibleH - margin * 2) * scale
+            );
+        }
+
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#111827';
+        ctx.font = '11px ui-monospace';
+        ctx.textAlign = 'left';
+        const label = `${frame.label} ${Math.round(frameW)}×${Math.round(frameH)}mm`;
+        ctx.fillText(label, mapX(clampedX + visibleW) + 8, mapY(clampedY + visibleH) + 16);
+        ctx.restore();
+    }
+
     _drawShape(ctx, shape, mapX, mapY, scale, selected, isDraft) {
         if (shape.type === 'group') {
             shape.children.forEach(child => this._drawShape(ctx, child, mapX, mapY, scale, false, isDraft));
@@ -1043,7 +1116,7 @@ export class CanvasEditor {
             ctx.setLineDash([4, 4]);
         } else {
             if (shape.method === 'crease') ctx.strokeStyle = '#f59e0b'; // amber/orange
-            else if (shape.method === 'off_base') ctx.strokeStyle = '#8b5cf6'; // purple
+            else if (shape.method === 'score' || shape.method === 'scoring' || shape.method === 'off_base') ctx.strokeStyle = '#ef4444'; // red
             else ctx.strokeStyle = '#3b82f6'; // blue
         }
 
@@ -1108,7 +1181,7 @@ export class CanvasEditor {
         // Selection bounding box handles
         if (selected) {
             const bbox = shapeBBox(shape);
-            const bx = mapX(bbox.x);
+            const bx = mapX(bbox.x + bbox.w);
             const by = mapY(bbox.y + bbox.h);
             const bw = bbox.w * scale;
             const bh = bbox.h * scale;
@@ -1140,7 +1213,7 @@ export class CanvasEditor {
         const paths = flatShapes
             .map(s => {
                 const d = shapeToPathD(s, bedW, bedH);
-                return d.length > 0 ? `  <path d="${d}" data-method="${s.method || 'thru_cut'}" />` : '';
+                return d.length > 0 ? `  <path d="${d}" data-method="${normalizeMethod(s.method)}" />` : '';
             })
             .filter(Boolean)
             .join('\n');
@@ -1204,7 +1277,7 @@ ${paths}
             const d = p.getAttribute('d');
             if (!d) return;
             const strokeWidth = parseFloat(p.getAttribute('stroke-width')) || 1.5;
-            const method = p.getAttribute('data-method') || 'thru_cut';
+            const method = normalizeMethod(p.getAttribute('data-method') || 'thru_cut');
             
             const commands = converter.parsePathData(d);
             
