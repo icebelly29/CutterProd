@@ -704,8 +704,8 @@ function startJob() {
     if (state.wasInterrupted && state.binaryPackets?.length) {
         const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
         const zUpStep = Math.round(12 * zStepsPerMM);
-        const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
-        const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
+        const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 5;
+        const stepVz = Math.max(1, Math.round(zSpeed * zStepsPerMM));
         const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
         const retractPkt = stampSeq(packMicrosegment(0, 0, -zUpStep, 0, interval, 0x01, 0), 0);
         state.binaryPackets = [retractPkt, ...state.binaryPackets];
@@ -2707,6 +2707,7 @@ function sendJog(dx, dy, dz, da = 0) {
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
     const aStepsPerDeg = getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A);
     const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 5;
 
     // 2. Calculate relative steps
     // Note: Z-axis convention is positive for DOWN, so we negate dz (Up is positive)
@@ -2720,12 +2721,20 @@ function sendJog(dx, dy, dz, da = 0) {
     // 3. Calculate interval for microsegment
     const maxAbsStep = Math.max(Math.abs(relX), Math.abs(relY), Math.abs(relZ), Math.abs(relA));
     let stepsPerUnitOfMaxAxis = 1.0;
-    if (maxAbsStep === Math.abs(relX)) stepsPerUnitOfMaxAxis = xStepsPerMM;
-    else if (maxAbsStep === Math.abs(relY)) stepsPerUnitOfMaxAxis = yStepsPerMM;
-    else if (maxAbsStep === Math.abs(relZ)) stepsPerUnitOfMaxAxis = zStepsPerMM;
-    else stepsPerUnitOfMaxAxis = aStepsPerDeg;
+    let effectiveFeedRate = feedRate;
+    
+    if (maxAbsStep === Math.abs(relX)) {
+        stepsPerUnitOfMaxAxis = xStepsPerMM;
+    } else if (maxAbsStep === Math.abs(relY)) {
+        stepsPerUnitOfMaxAxis = yStepsPerMM;
+    } else if (maxAbsStep === Math.abs(relZ)) {
+        stepsPerUnitOfMaxAxis = zStepsPerMM;
+        effectiveFeedRate = zSpeed;
+    } else {
+        stepsPerUnitOfMaxAxis = aStepsPerDeg;
+    }
 
-    const speed = feedRate * stepsPerUnitOfMaxAxis;
+    const speed = effectiveFeedRate * stepsPerUnitOfMaxAxis;
     const interval = Math.max(1, Math.min(Math.round(150_000_000 / speed), 150_000_000));
 
     const packet = packMicrosegment(relX, relY, relZ, relA, interval, 1, 0);
