@@ -266,7 +266,7 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
             if (magic !== 0xAB) continue;
 
             const dx = view.getInt32(1,  true);
-            const dy = view.getInt32(5,  true);
+            const dy = -view.getInt32(5,  true); // Un-invert Y from hardware packet
             const dz = view.getInt32(9,  true);
             // da ignored for 2D display
 

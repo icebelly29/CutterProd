@@ -324,7 +324,7 @@ function updateViewer() {
 function updatePositionFromPacket(packet) {
     const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
     const dx = view.getInt32(1, true);
-    const dy = view.getInt32(5, true);
+    const dy = -view.getInt32(5, true); // Un-invert Y from hardware packet
     const dz = view.getInt32(9, true);
     const da = view.getInt32(13, true);
 
