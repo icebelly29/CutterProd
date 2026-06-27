@@ -254,6 +254,13 @@ const Method2Controller = (() => {
         if (!file) return;
 
         LogPanel.addLine('Uploading machine bed photo directly...', 'info');
+        
+        let uploadOverlay = document.getElementById('uploadOverlay');
+        if (uploadOverlay) {
+            uploadOverlay.classList.remove('hidden');
+            lucide.createIcons();
+        }
+
         const formData = new FormData();
         formData.append('image', file);
 
@@ -263,6 +270,7 @@ const Method2Controller = (() => {
         })
         .then(r => r.json())
         .then(data => {
+            if (uploadOverlay) uploadOverlay.classList.add('hidden');
             if (data.success) {
                 LogPanel.addLine(`Direct upload processed successfully: ${data.frame_name} frame`, 'success');
                 // The server will also broadcast 'bed_rectified' via WS, which we handle
@@ -272,6 +280,7 @@ const Method2Controller = (() => {
             }
         })
         .catch(err => {
+            if (uploadOverlay) uploadOverlay.classList.add('hidden');
             LogPanel.addLine('Direct upload failed due to server or network error', 'error');
         });
     }

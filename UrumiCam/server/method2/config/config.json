@@ -1,5 +1,6 @@
 {
   "small": "./small.json",
   "medium": "./medium.json",
-  "large": "./large.json"
+  "large": "./large.json",
+  "custom": "./custom.json"
 }

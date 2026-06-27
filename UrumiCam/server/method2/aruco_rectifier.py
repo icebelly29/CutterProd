@@ -6,7 +6,7 @@
 Perspective correction and scaling of mobile-uploaded machine bed images
 using ArUco frame references.
 
-- Automatically identifies frame size (Small, Medium, Large)
+- Automatically identifies frame size from configured ArUco frames
 - Calibrates DPI based on known physical marker coordinates
 - Compensates for lens distortion using perimeter checkerboard corners
 - Returns a top-down, dimensionally accurate rectified image
@@ -38,7 +38,7 @@ class ArUcoRectifier:
         self.config_frames = self._load_all_configs()
 
     def _load_all_configs(self):
-        """Load configuration details for small, medium, and large ArUco frames."""
+        """Load configuration details for all indexed ArUco frames."""
         configs = {}
         config_path = os.path.join(self.config_dir, "config.json")
         if not os.path.exists(config_path):

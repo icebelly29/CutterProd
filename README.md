@@ -4,6 +4,18 @@ A unified browser-based control platform for driving a multi-axis CNC/plotter ga
 
 One command — `npm start` — launches both the CutterProd frontend and the UrumiCam Python backend.
 
+## Screenshots
+
+<p align="center">
+  <img src="documentation/assets/draw_tab.png" width="48%" alt="Draw Tab"/>
+  <img src="documentation/assets/trajectory_preview.png" width="48%" alt="Trajectory Preview"/>
+</p>
+
+<p align="center">
+  <img src="frame-design/test-frames/custom 2.png" width="48%" alt="UrumiCam Custom Machine Bed Calibration"/>
+  <img src="frame-design/custom.svg" width="48%" alt="Generated Custom ArUco Template"/>
+</p>
+
 ---
 
 ## Architecture

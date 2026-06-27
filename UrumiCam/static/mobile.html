@@ -233,6 +233,15 @@
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .animate-spin {
+            animation: spin 1s linear infinite;
+        }
     </style>
 </head>
 <body>
@@ -289,10 +298,53 @@
             previewImg.style.display = 'none';
             progressContainer.style.display = 'block';
             progressFill.style.width = '0%';
-            progressStatus.innerText = 'Preparing image...';
+            progressStatus.innerHTML = '<i data-lucide="loader-2" class="animate-spin" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Preparing image...';
+            lucide.createIcons();
 
+            const imgUrl = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = function() {
+                URL.revokeObjectURL(imgUrl);
+                
+                // Resize image to max 2048px on the longest side to dramatically speed up upload
+                const MAX_DIM = 2048;
+                let width = img.width;
+                let height = img.height;
+                
+                if (width > MAX_DIM || height > MAX_DIM) {
+                    if (width > height) {
+                        height = Math.round((height * MAX_DIM) / width);
+                        width = MAX_DIM;
+                    } else {
+                        width = Math.round((width * MAX_DIM) / height);
+                        height = MAX_DIM;
+                    }
+                }
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                canvas.toBlob(function(blob) {
+                    if (!blob) {
+                        showError("Failed to process image on device.");
+                        return;
+                    }
+                    uploadBlob(blob, file.name || "capture.jpg");
+                }, 'image/jpeg', 0.85);
+            };
+            img.onerror = function() {
+                URL.revokeObjectURL(imgUrl);
+                showError("Failed to load image file.");
+            };
+            img.src = imgUrl;
+        });
+
+        function uploadBlob(blob, filename) {
             const formData = new FormData();
-            formData.append('image', file);
+            formData.append('image', blob, filename);
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/api/method2/upload', true);
@@ -303,13 +355,15 @@
                     // Cap at 95% until server completes processing
                     const displayPercent = Math.min(95, percent);
                     progressFill.style.width = displayPercent + '%';
-                    progressStatus.innerText = `Uploading: ${displayPercent}%`;
+                    progressStatus.innerHTML = `<i data-lucide="upload-cloud" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Uploading: ${displayPercent}%`;
+                    lucide.createIcons();
                 }
             };
 
             xhr.onload = function() {
                 progressFill.style.width = '100%';
-                progressStatus.innerText = 'Processing on server...';
+                progressStatus.innerHTML = '<i data-lucide="loader-2" class="animate-spin" style="width:14px; height:14px; vertical-align:middle; margin-right:4px;"></i> Processing on server...';
+                lucide.createIcons();
 
                 if (xhr.status >= 200 && xhr.status < 300) {
                     try {
@@ -332,7 +386,7 @@
             };
 
             xhr.send(formData);
-        });
+        }
 
         function showSuccess(data) {
             progressContainer.style.display = 'none';

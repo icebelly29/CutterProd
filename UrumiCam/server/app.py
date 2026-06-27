@@ -326,6 +326,13 @@ def api_method2_upload():
             valid_contours.append(c)
         contours = valid_contours
         
+        # 3b. Generate a Workpiece Mask to isolate bright paper/cardboard from the dark felt bed
+        bg_thresh_val, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        _, workpiece_mask = cv2.threshold(blurred, bg_thresh_val, 255, cv2.THRESH_BINARY)
+        # Close holes inside the paper (ink strokes) and open to remove bright specks on the felt
+        workpiece_mask = cv2.morphologyEx(workpiece_mask, cv2.MORPH_CLOSE, np.ones((25, 25), np.uint8))
+        workpiece_mask = cv2.morphologyEx(workpiece_mask, cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
+
         # 4a. Generate a dark-stroke mask for skeletonization (ink=white, paper=black).
         # A black-hat transform suppresses the paper grain and broad shading that were
         # causing the adaptive threshold to light up as thousands of tiny specks.
@@ -355,9 +362,14 @@ def api_method2_upload():
         )
         binary_mask = cv2.bitwise_or(binary_mask, colored_ink_mask)
 
+        # Apply the workpiece mask to eliminate the background felt noise
+        binary_mask = cv2.bitwise_and(binary_mask, workpiece_mask)
+
         # Clear out the border edges (ArUco frame) so it isn't skeletonized.
         # The ArUco markers and frame typically take up 4-5% of the image edge.
-        mask_edge_margin = max(10, int(0.05 * min(w_px, h_px)))
+        # Use a small margin (e.g. 2 pixels) to clean up interpolation artifacts at the very edge,
+        # but do not wipe out valid user drawings near the boundary.
+        mask_edge_margin = 2
         binary_mask[0:mask_edge_margin, :] = 0
         binary_mask[-mask_edge_margin:, :] = 0
         binary_mask[:, 0:mask_edge_margin] = 0
@@ -629,6 +641,15 @@ def api_method2_upload():
         min_trace_length = 18.0
         polys = loop_overrides[:]
 
+        def is_border_artifact(poly, w, h, margin):
+            for pt in poly:
+                x, y = pt
+                if margin < x < w - margin and margin < y < h - margin:
+                    return False
+            return True
+
+        border_margin_px = max(20, int(0.015 * min(w_px, h_px)))
+
         for label in range(1, num_skel_labels):
             x = skel_stats[label, cv2.CC_STAT_LEFT]
             y = skel_stats[label, cv2.CC_STAT_TOP]
@@ -659,6 +680,10 @@ def api_method2_upload():
                 shifted_poly = simplify_trace_polyline(shifted_poly)
                 if len(shifted_poly) < 2 or polyline_length(shifted_poly) < min_trace_length:
                     continue
+                    
+                if is_border_artifact(shifted_poly, w_px, h_px, border_margin_px):
+                    continue
+                    
                 polys.append({
                     "points": shifted_poly,
                     "method": method,

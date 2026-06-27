@@ -1,3 +1,5 @@
+import { initFrameGenerator } from './frameGenerator.js';
+
 /**
  * ============================================================================
  *                       MAIN CONTROLLER (THE BRAIN)
@@ -42,12 +44,12 @@ import { packMicrosegment } from './BinaryUtils.js';
 /**
  * Canonical per-axis resolution fallbacks — these MUST match the firmware's
  * machine config (Urumi-Fw/pipeline/stages/config.py): X/Y 160 steps/mm,
- * Z 1200 steps/mm, A 120 steps/deg. Used only when the Settings inputs are
+ * Z 1200 steps/mm, A 103 steps/deg. Used only when the Settings inputs are
  * empty; the UI Settings remain the live source of truth. Centralised here so
  * the three places that previously hard-coded mismatched defaults (80 / 800 /
  * 92.44) can no longer drift. (Assessment R3 / fix F3.)
  */
-const DEFAULT_STEPS = { X: 160, Y: 160, Z: 1200, A: 120 };
+const DEFAULT_STEPS = { X: 160, Y: 160, Z: 1200, A: 103 };
 const URUMI_VISION_SERVER_URL = "http://localhost:5000";
 
 /**
@@ -145,6 +147,8 @@ const segmentLengthInput = document.getElementById('segmentLengthInput');
 const segmentLengthSlider = document.getElementById('segmentLengthSlider');
 const cuttingSpeedInput = document.getElementById('cuttingSpeedInput');
 const cuttingSpeedSlider = document.getElementById('cuttingSpeedSlider');
+const zSpeedInput = document.getElementById('zSpeedInput');
+const zSpeedSlider = document.getElementById('zSpeedSlider');
 
 // --- Embedded Vision Elements ---
 const visionPhotoInput = document.getElementById('visionPhotoInput');
@@ -301,15 +305,15 @@ function handleStatusResponse(msg) {
  */
 function updateViewer() {
     const container = document.getElementById('canvasContainer');
-    const canvas    = document.getElementById('gcodeCanvas');
+    const canvas = document.getElementById('gcodeCanvas');
     if (!canvas || !container) return;
 
     // If the panel is hidden, getBoundingClientRect() returns 0. Use a fallback size
     // so the render still produces valid data that the user sees on switching tabs.
     const rect = container.getBoundingClientRect();
     if (rect.width < 10 || rect.height < 10) {
-        canvas.width  = 770;
-        canvas.height = 960;
+        canvas.width = 650;
+        canvas.height = 760;
     }
     renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets, state.packetMeta);
 }
@@ -646,10 +650,41 @@ function buildDataEditorSummary(result, stepsPerMM = 1.0) {
         '',
         'Notes',
         '-----',
-        '- Raw binary packet bytes are hidden here so this tab stays readable.',
         '- Use Trajectory Preview to visually inspect the motion path.',
-        '- Tool-change pauses happen during the run, between the listed chunks.'
+        '- Tool-change pauses happen during the run, between the listed chunks.',
+        '',
+        'Raw Packets',
+        '-----------'
     );
+
+    if (packets && packets.length > 0) {
+        // Limit output to prevent freezing the browser with huge files
+        const maxDisplay = Math.min(packets.length, 5000);
+        for (let i = 0; i < maxDisplay; i++) {
+            const pkt = packets[i];
+            if (pkt.length === 26) {
+                const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
+                const magic = view.getUint8(0);
+                if (magic === 0xAB) {
+                    const dx = view.getInt32(1, true);
+                    const dy = view.getInt32(5, true);
+                    const dz = view.getInt32(9, true);
+                    const da = view.getInt32(13, true);
+                    const interval = view.getUint32(17, true);
+                    const flags = view.getUint8(21);
+                    const seq = view.getUint8(22);
+                    lines.push(`[${i + 1}] seq=${seq} dx=${dx} dy=${dy} dz=${dz} da=${da} dt=${interval} flags=${flags}`);
+                } else {
+                    lines.push(`[${i + 1}] Invalid Magic`);
+                }
+            }
+        }
+        if (packets.length > maxDisplay) {
+            lines.push(`... (and ${packets.length - maxDisplay} more packets hidden for performance)`);
+        }
+    } else {
+        lines.push('- No packets generated.');
+    }
 
     return lines.join('\n');
 }
@@ -771,7 +806,7 @@ function stopJob() {
         clearTimeout(state.simTimeout);
         state.simTimeout = null;
     }
-    
+
     // F6: Release Wake Lock
     if (wakeLock) {
         wakeLock.release().then(() => { wakeLock = null; });
@@ -805,7 +840,7 @@ function executeNextTextCommand() {
     if (state.gcodeQueue.length > 0) {
         const nextCmd = state.gcodeQueue[0];
 
-    // When we hit a __BINARY_STREAM__ sentinel, launch the binary pipeline
+        // When we hit a __BINARY_STREAM__ sentinel, launch the binary pipeline
         const binaryRange = parseBinaryStreamCommand(nextCmd);
         if (binaryRange) {
             state.gcodeQueue.shift();
@@ -934,12 +969,12 @@ function finishJob() {
     } else {
         log('Job Complete. Suction deactivated.', 'success');
     }
-    
+
     // F6: Release Wake Lock
     if (wakeLock) {
         wakeLock.release().then(() => { wakeLock = null; });
     }
-    
+
     setStartButtonState(false);
 }
 
@@ -1027,6 +1062,22 @@ if (btnToggleMotors) {
             connection.send('enable all', true);
             btnToggleMotors.dataset.enabled = 'true';
             btnToggleMotors.textContent = 'Disable Motors';
+        }
+    });
+}
+
+const btnToggleKnife = document.getElementById('btnToggleKnife');
+if (btnToggleKnife) {
+    btnToggleKnife.addEventListener('click', () => {
+        const isEnabled = btnToggleKnife.dataset.enabled === 'true';
+        if (isEnabled) {
+            connection.send('knife 0', true);
+            btnToggleKnife.dataset.enabled = 'false';
+            btnToggleKnife.textContent = 'Knife ON';
+        } else {
+            connection.send('knife 1', true);
+            btnToggleKnife.dataset.enabled = 'true';
+            btnToggleKnife.textContent = 'Knife OFF';
         }
     });
 }
@@ -1194,7 +1245,7 @@ function onGCodeReady(result, stepsPerMM = 1.0) {
 // The CanvasEditor needs the same viewport metrics that Viewer computes so that
 // its machine-mm ↔ canvas-px transforms match exactly. We keep a shared live
 // object and update it whenever the draw tab opens.
-const drawViewState = { scale: 1, offsetX: 0, offsetY: 0, bedW: 770, bedH: 960 };
+const drawViewState = { scale: 1, offsetX: 0, offsetY: 0, bedW: 600, bedH: 750 };
 
 const drawCanvasEl = document.getElementById('drawCanvas');
 const drawContainer = document.getElementById('drawCanvasContainer');
@@ -1207,12 +1258,12 @@ if (drawCanvasEl) {
 // Recompute viewport metrics (mirrors the Viewer math)
 let hasInitializedView = false;
 function updateDrawViewMetrics() {
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960;
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750;
 
     if (!drawContainer || !drawCanvasEl) return;
     const rect = drawContainer.getBoundingClientRect();
-    
+
     let resized = false;
     if (drawCanvasEl.width !== rect.width) { drawCanvasEl.width = rect.width; resized = true; }
     if (drawCanvasEl.height !== rect.height) { drawCanvasEl.height = rect.height; resized = true; }
@@ -1423,7 +1474,13 @@ function visionAssetUrl(pathOrUrl, serverUrl = URUMI_VISION_SERVER_URL) {
 
 function setVisionStatus(message, kind = "info") {
     if (!visionStatus) return;
-    visionStatus.textContent = message;
+    
+    if (kind === 'loading') {
+        visionStatus.innerHTML = `<span style="display:inline-block; margin-right:8px; width:12px; height:12px; border:2px solid var(--text-muted); border-top-color:var(--text-primary); border-radius:50%; animation:spin 1s linear infinite;"></span>${message}`;
+    } else {
+        visionStatus.textContent = message;
+    }
+    
     visionStatus.classList.toggle('success', kind === 'success');
     visionStatus.classList.toggle('error', kind === 'error');
 }
@@ -1687,8 +1744,8 @@ function buildVisionTraceSvg(groupedPaths, width, height) {
 
 function getBedSizeMM() {
     return {
-        bedW: parseFloat(document.getElementById('bedWidthInput')?.value) || 770,
-        bedH: parseFloat(document.getElementById('bedHeightInput')?.value) || 960
+        bedW: parseFloat(document.getElementById('bedWidthInput')?.value) || 600,
+        bedH: parseFloat(document.getElementById('bedHeightInput')?.value) || 750
     };
 }
 
@@ -1942,13 +1999,48 @@ visionPhotoInput?.addEventListener('change', async (event) => {
     if (!file) return;
 
     try {
-        setVisionStatus("Uploading and rectifying photo...");
+        setVisionStatus("Preparing image...", "loading");
         if (btnVisionUpload) btnVisionUpload.disabled = true;
         if (btnVisionImport) btnVisionImport.disabled = true;
         if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
 
+        // Resize image on client to speed up upload
+        const resizedBlob = await new Promise((resolve, reject) => {
+            const imgUrl = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+                URL.revokeObjectURL(imgUrl);
+                const MAX_DIM = 2048;
+                let { width, height } = img;
+                if (width > MAX_DIM || height > MAX_DIM) {
+                    if (width > height) {
+                        height = Math.round((height * MAX_DIM) / width);
+                        width = MAX_DIM;
+                    } else {
+                        width = Math.round((width * MAX_DIM) / height);
+                        height = MAX_DIM;
+                    }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                canvas.toBlob(blob => {
+                    if (blob) resolve(blob);
+                    else reject(new Error("Failed to process image blob."));
+                }, 'image/jpeg', 0.85);
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(imgUrl);
+                reject(new Error("Failed to load image."));
+            };
+            img.src = imgUrl;
+        });
+
+        setVisionStatus("Uploading and rectifying photo...", "loading");
         const form = new FormData();
-        form.append("image", file);
+        form.append("image", resizedBlob, file.name || "capture.jpg");
         const res = await fetch(`${URUMI_VISION_SERVER_URL}/api/method2/upload`, {
             method: "POST",
             body: form
@@ -1971,7 +2063,7 @@ visionPhotoInput?.addEventListener('change', async (event) => {
 
 btnVisionImport?.addEventListener('click', async () => {
     try {
-        setVisionStatus("Importing simplified trace...");
+        setVisionStatus("Importing simplified trace...", "loading");
         if (btnVisionImport) btnVisionImport.disabled = true;
         if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
         await processUrumiVisionAssets({ payload: latestVisionPayload });
@@ -1986,7 +2078,7 @@ btnVisionImport?.addEventListener('click', async () => {
 
 btnVisionImportCanvas?.addEventListener('click', async () => {
     try {
-        setVisionStatus("Adding trace to drawing canvas...");
+        setVisionStatus("Adding trace to drawing canvas...", "loading");
         if (btnVisionImport) btnVisionImport.disabled = true;
         if (btnVisionImportCanvas) btnVisionImportCanvas.disabled = true;
         await processUrumiVisionAssets({ payload: latestVisionPayload, destination: "canvas" });
@@ -2444,6 +2536,10 @@ segmentLengthSlider.addEventListener('input', (e) => { segmentLengthInput.value 
 segmentLengthInput.addEventListener('input', (e) => { segmentLengthSlider.value = e.target.value; });
 cuttingSpeedSlider.addEventListener('input', (e) => { cuttingSpeedInput.value = e.target.value; });
 cuttingSpeedInput.addEventListener('input', (e) => { cuttingSpeedSlider.value = e.target.value; });
+if (zSpeedSlider && zSpeedInput) {
+    zSpeedSlider.addEventListener('input', (e) => { zSpeedInput.value = e.target.value; });
+    zSpeedInput.addEventListener('input', (e) => { zSpeedSlider.value = e.target.value; });
+}
 
 const maxStepsSlider = document.getElementById('maxStepsSlider');
 const maxStepsInput = document.getElementById('maxStepsInput');
@@ -2468,6 +2564,7 @@ if (maxRotationalSpeedSlider && maxRotationalSpeedInput) {
 // Watch all config inputs for changes
 [
     segmentLengthSlider, segmentLengthInput, cuttingSpeedSlider, cuttingSpeedInput,
+    zSpeedSlider, zSpeedInput,
     maxStepsSlider, maxStepsInput, maxLinearSpeedSlider, maxLinearSpeedInput,
     maxRotationalSpeedSlider, maxRotationalSpeedInput,
     'bedWidthInput', 'bedHeightInput', 'gantryWidthInput', 'gantryHeightInput',
@@ -2682,6 +2779,7 @@ function goToZero() {
     const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
     const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
+    const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 5;
 
     const cmds = [];
 
@@ -2690,7 +2788,7 @@ function goToZero() {
     if (jogState.posZ < zTarget) {
         const relZ = Math.round(-(zTarget - jogState.posZ) * zStepsPerMM); // Up = negative Z steps
         if (relZ !== 0) {
-            const stepVz = Math.max(1, Math.round(feedRate * zStepsPerMM));
+            const stepVz = Math.max(1, Math.round(zSpeed * zStepsPerMM));
             const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
             cmds.push(packMicrosegment(0, 0, relZ, 0, interval, 0x01, 0));
         }
@@ -2774,8 +2872,8 @@ function handleJogKey(e) {
  * @returns {Array<number>} List of active zone IDs (1-6).
  */
 function calculateActiveZones(gcode, packets = []) {
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960;
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750;
 
     const lines = gcode.split('\n');
     let cur = { x: 0, y: 0 };
@@ -3102,3 +3200,4 @@ function initSuctionBed() {
 
 // Kickstart the suction bed subsystem
 initSuctionBed();
+initFrameGenerator();

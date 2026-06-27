@@ -183,9 +183,31 @@ All options are passed to the `SvgConverter` constructor. Every field is optiona
 | `scale` | `number` | `1.0` | Multiplier to convert SVG units to millimeters. For a 96 DPI SVG, use `3.7795`. |
 | `offsetX` | `number` | `0` | Translates the entire drawing on the X axis (mm) — use to center on the bed. |
 | `offsetY` | `number` | `0` | Translates the entire drawing on the Y axis (mm). |
+| `flipX` | `boolean` | `false` | Inverts the X axis. |
 | `flipY` | `boolean` | `false` | Inverts the Y axis. **Set to `true`** for machines where Y=0 is at the bottom-left (CNC standard) but the SVG has Y=0 at the top-left (screen standard). |
+| `invertX` | `boolean` | `false` | Alias for `flipX`. Inverts the X axis. |
+| `invertY` | `boolean` | `false` | Alias for `flipY`. Inverts the Y axis. |
+| `swapXY` | `boolean` | `false` | Swaps X and Y coordinates. |
+| `quadrant` | `number` | `null` | Remaps coordinates to a specific Cartesian quadrant (1, 2, 3, or 4). |
+| `rotation` | `number` | `0` | Workspace rotation angle in degrees (also accepts `rotationAngle`). |
 | `bedW` | `number` | `Infinity` | Physical cutting bed width (mm). Coordinates are clamped to this boundary. |
 | `bedH` | `number` | `Infinity` | Physical cutting bed height (mm). |
+
+> [!NOTE]
+> All the above transformation options (such as `scale`, `offsetX`, `offsetY`, `flipX`/`flipY`, `invertX`/`invertY`, `swapXY`, `quadrant`, and `rotation`/`rotationAngle`) can also be grouped and passed cleanly inside a single nested `transformations` or `transformation` configuration object.
+>
+> **Example:**
+> ```javascript
+> const converter = new SvgConverter({
+>   transformations: {
+>     scale: 1.5,
+>     rotation: 45,
+>     quadrant: 1,
+>     offsetX: 10,
+>     offsetY: 20
+>   }
+> });
+> ```
 
 ### Segmentation & Motion
 

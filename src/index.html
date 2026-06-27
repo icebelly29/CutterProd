@@ -265,7 +265,7 @@
                             <option value="tabloid">Tabloid</option>
                         </select>
                     </div>
-                    <div class="draw-option-group">
+                    <div class="draw-option-group" style="display: none !important;">
                         <label>Orient</label>
                         <select id="drawPageOrientation" title="Frame orientation">
                             <option value="portrait">Portrait</option>
@@ -542,6 +542,14 @@
                         <input type="number" id="cuttingSpeedInput" value="30" step="1" min="1" max="200">
                     </div>
                     <span class="help-text">Target speed for cutting moves (normalized velocity).</span>
+                </div>
+                <div class="form-group">
+                    <label for="zSpeedInput">Z-Axis Speed (mm/sec):</label>
+                    <div class="slider-input-group">
+                        <input type="range" id="zSpeedSlider" value="5" step="1" min="1" max="7">
+                        <input type="number" id="zSpeedInput" value="5" step="1" min="1" max="7">
+                    </div>
+                    <span class="help-text">Target speed for Z-axis moves (lifting/plunging). Maximum 7.</span>
                 </div>
 
                 <div class="form-group">

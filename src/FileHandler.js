@@ -237,7 +237,7 @@ function simplifyScannerSvgPaths(svg, meta) {
 export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = null) {
     if (!file) return;
     log(`Loading ${file.name}...`, 'info');
-    
+
     try {
         const text = await file.text();
         let conversionText = text;
@@ -245,13 +245,20 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
 
         // --- CASE 1: SVG FILE ---
         if (file.name.toLowerCase().endsWith('.svg')) {
-            
+
             // 1. Parse the XML
             const parser = new DOMParser();
             const doc = parser.parseFromString(text, 'image/svg+xml');
             const svg = doc.querySelector('svg');
 
             if (svg) {
+                // Remove ignored elements (like the visual frame) so they aren't processed into trajectories
+                const ignoredNodes = svg.querySelectorAll('[data-ignore="true"]');
+                ignoredNodes.forEach(node => node.remove());
+                
+                // Re-serialize back to text so SvgConverter (which uses text parsing) ignores them
+                conversionText = new XMLSerializer().serializeToString(svg);
+
                 const embeddedMeta = parseEmbeddedUrumiMeta(svg);
                 if (!resolvedUrumiMeta && embeddedMeta) {
                     resolvedUrumiMeta = embeddedMeta;
@@ -278,21 +285,21 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 // Force it to fit the preview window
                 svg.style.width = '100%';
                 svg.style.height = '100%';
-                
+
                 const svgPreview = document.getElementById('svgPreview');
-                svgPreview.innerHTML = ''; 
+                svgPreview.innerHTML = '';
                 svgPreview.appendChild(svg);
             }
 
             // 3. Determine Dimensions (Complex!)
             // SVGs can use mm, cm, in, px, or no units at all.
             // We try to find the "Real World" size of the drawing.
-            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770;
-            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960;
+            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600;
+            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750;
             let w_mm = 0, h_mm = 0;
             let viewbox = [0, 0, 0, 0];
 
-            if(svg) {
+            if (svg) {
                 const wAttr = svg.getAttribute('width');
                 const hAttr = svg.getAttribute('height');
                 const vbAttr = svg.getAttribute('viewBox');
@@ -300,7 +307,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 if (vbAttr) {
                     viewbox = vbAttr.split(/[ ,]+/).map(parseFloat);
                 }
-                
+
                 // Helper to convert strings like "10in" to mm
                 const parseToMM = (str) => {
                     if (!str) return 0;
@@ -380,7 +387,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
 
                 const vbMinX = viewbox.length === 4 ? viewbox[0] : 0;
                 const vbMinY = viewbox.length === 4 ? viewbox[1] : 0;
-                
+
                 // Align to center or leave at 0,0 for Canvas
                 if (isCanvas) {
                     // The draw canvas is authored in a bottom-left logical space,
@@ -397,7 +404,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             // Read inversion checkboxes
             let invertXElement = document.getElementById('invertXCheckbox');
             let flipX = invertXElement ? invertXElement.checked : false;
-            
+
             let invertYElement = document.getElementById('invertYCheckbox');
             let flipY = invertYElement ? invertYElement.checked : false;
 
@@ -426,10 +433,13 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 const stepsPerMM_X = axisSteps('xStepsPerMM', 160);
                 const stepsPerMM_Y = axisSteps('yStepsPerMM', 160);
                 const stepsPerMM_Z = axisSteps('zStepsPerMM', 1200);
-                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 120);
+                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 103);
 
                 const cuttingSpeedInput = document.getElementById('cuttingSpeedInput');
                 const cuttingSpeed = cuttingSpeedInput ? parseFloat(cuttingSpeedInput.value) : 30;
+
+                const zSpeedInput = document.getElementById('zSpeedInput');
+                const zSpeed = zSpeedInput ? parseFloat(zSpeedInput.value) : 5;
 
                 const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
                 const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
@@ -438,7 +448,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
 
                 const maxStepsInput = document.getElementById('maxStepsInput');
                 const maxSteps = maxStepsInput ? parseInt(maxStepsInput.value) : 30000;
-                
+
                 const maxLinearSpeedInput = document.getElementById('maxLinearSpeedInput');
                 const maxRotationalSpeedInput = document.getElementById('maxRotationalSpeedInput');
                 const maxLinearSpeed = maxLinearSpeedInput ? parseInt(maxLinearSpeedInput.value) : 200;
@@ -451,7 +461,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 const converter = new SvgConverter({
                     flipX: flipX,
                     flipY: flipY,
-                    feedRate: cuttingSpeed, 
+                    feedRate: cuttingSpeed,
+                    zFeedRate: zSpeed,
                     maxSteps: maxSteps,
                     maxLinearSpeed: maxLinearSpeed,
                     maxRotationalSpeed: maxRotationalSpeed,
@@ -473,7 +484,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     docH: finalH
                 });
                 const result = converter.convert(conversionText);
-                
+
                 onGCodeReady(result, stepsPerMM_X);
                 log(`Converted (Size: ${finalW.toFixed(1)}x${finalH.toFixed(1)}mm)`, 'success');
                 onSwitchTab('gcode-preview');

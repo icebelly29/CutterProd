@@ -58,8 +58,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
     const ctx = canvas.getContext('2d');
 
     // --- 1. Setup Dimensions ---
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 770; // Machine Width (mm)
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 960; // Machine Height/Length (mm)
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600; // Machine Width (mm)
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750; // Machine Height/Length (mm)
     const gantryW = parseFloat(document.getElementById('gantryWidthInput')?.value) || 210; // Gantry Width (mm)
     const gantryH = parseFloat(document.getElementById('gantryHeightInput')?.value) || 180; // Gantry Height (mm)
 
@@ -73,8 +73,8 @@ export function renderGCode(gcode, canvasId = 'gcodeCanvas', containerId = 'canv
         canvas.height = rect.height;
     } else if (canvas.width < 10 || canvas.height < 10) {
         // First render ever while hidden — use a default
-        canvas.width  = 770;
-        canvas.height = 960;
+        canvas.width  = 650;
+        canvas.height = 760;
     }
     // else: canvas retains its previous size from the last visible render
 

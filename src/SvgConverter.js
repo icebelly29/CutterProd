@@ -231,15 +231,39 @@ class SvgConverter {
    * @param {number} [options.offsetY=0] - Y offset for centering.
    * @param {number} [options.segmentLength=1.0] - Desired length of linear segments (mm).
    * @param {number} [options.stepsPerMM=1.0] - Scaling factor to convert mm to motor steps.
+   * @param {Object} [options.transformations] - Nested configuration for coordinate transformations.
+   * @param {boolean} [options.transformations.invertX=false] - Invert coordinates along X axis.
+   * @param {boolean} [options.transformations.invertY=false] - Invert coordinates along Y axis.
+   * @param {boolean} [options.transformations.swapXY=false] - Swap X and Y coordinates.
+   * @param {number} [options.transformations.quadrant=null] - Target Cartesian quadrant (1, 2, 3, or 4).
+   * @param {number} [options.transformations.rotation=0] - Global rotation angle in degrees.
    */
   constructor(options = {}) {
+    // Determine the source of transformation settings (nested transformations block or root options)
+    const tx = options.transformations || options.transformation || {};
+
     this.feedRate = options.feedRate || 300;
-   this.scale = options.scale || 1.0;
-   this.offsetX = options.offsetX || 0;
-   this.offsetY = options.offsetY || 0;
-    this.flipX = options.flipX || false;
-   this.flipY = options.flipY || false;
+    this.zFeedRate = options.zFeedRate || 5;
+    this.scale = tx.scale !== undefined ? tx.scale : (options.scale !== undefined ? options.scale : 1.0);
+    this.offsetX = tx.offsetX !== undefined ? tx.offsetX : (options.offsetX !== undefined ? options.offsetX : 0);
+    this.offsetY = tx.offsetY !== undefined ? tx.offsetY : (options.offsetY !== undefined ? options.offsetY : 0);
+    this.flipX = tx.flipX !== undefined ? tx.flipX : (options.flipX !== undefined ? options.flipX : false);
+    this.flipY = tx.flipY !== undefined ? tx.flipY : (options.flipY !== undefined ? options.flipY : false);
     this.segmentLength = options.segmentLength || 1.0;
+
+    // New transformations for quadrant mapping and rotation
+    this.invertX = tx.invertX !== undefined ? tx.invertX : (options.invertX !== undefined ? options.invertX : false);
+    this.invertY = tx.invertY !== undefined ? tx.invertY : (options.invertY !== undefined ? options.invertY : false);
+    this.swapXY = tx.swapXY !== undefined ? tx.swapXY : (options.swapXY !== undefined ? options.swapXY : false);
+    this.quadrant = tx.quadrant !== undefined ? tx.quadrant : (options.quadrant !== undefined ? options.quadrant : null);
+    
+    // Support rotation as either rotationAngle or rotation, in both nested and root options
+    this.rotationAngle = 0;
+    if (tx.rotationAngle !== undefined) this.rotationAngle = tx.rotationAngle;
+    else if (options.rotationAngle !== undefined) this.rotationAngle = options.rotationAngle;
+    else if (tx.rotation !== undefined) this.rotationAngle = tx.rotation;
+    else if (options.rotation !== undefined) this.rotationAngle = options.rotation;
+
     // Per-axis step rates; stepsPerMM is kept as a fallback for backward compat
     const globalSteps = options.stepsPerMM || 1.0;
     this.stepsPerMM_X = options.stepsPerMM_X || globalSteps;
@@ -282,23 +306,98 @@ class SvgConverter {
   }
 
   /**
+   * @method transformPointAndVector
+   * @description Applies scaling, swapping, inverting, quadrant mapping, rotation, and offsets to a point and vector.
+   * @param {Vector2} p - The point to transform.
+   * @param {Vector2} [v] - The velocity/direction vector to transform.
+   * @returns {Object} An object containing the transformed { point, vector }.
+   */
+  transformPointAndVector(p, v = null) {
+      // 1. Scale
+      let x = p.x * this.scale;
+      let y = p.y * this.scale;
+
+      let vx = 0;
+      let vy = 0;
+      if (v) {
+          vx = v.x * this.scale;
+          vy = v.y * this.scale;
+      }
+
+      // 2. Swap XY (if enabled)
+      if (this.swapXY) {
+          const temp = x; x = y; y = temp;
+          if (v) {
+              const vTemp = vx; vx = vy; vy = vTemp;
+          }
+      }
+
+      // 3. Invert/Flip
+      if (this.flipX || this.invertX) {
+          x = -x;
+          if (v) vx = -vx;
+      }
+      if (this.flipY || this.invertY) {
+          y = -y;
+          if (v) vy = -vy;
+      }
+
+      // 4. Quadrant Mapping
+      if (this.quadrant !== undefined && this.quadrant !== null) {
+          const targetQuad = Number(this.quadrant);
+          const targetSignX = (targetQuad === 1 || targetQuad === 4) ? 1 : -1;
+          const targetSignY = (targetQuad === 1 || targetQuad === 2) ? 1 : -1;
+
+          const origSignX = x >= 0 ? 1 : -1;
+          const origSignY = y >= 0 ? 1 : -1;
+
+          x = targetSignX * Math.abs(x);
+          y = targetSignY * Math.abs(y);
+
+          if (v) {
+              vx = vx * origSignX * targetSignX;
+              vy = vy * origSignY * targetSignY;
+          }
+      }
+
+      // 5. Rotation around the origin (0, 0)
+      if (this.rotationAngle !== 0) {
+          const rad = (this.rotationAngle * Math.PI) / 180;
+          const cos = Math.cos(rad);
+          const sin = Math.sin(rad);
+
+          const rx = x * cos - y * sin;
+          const ry = x * sin + y * cos;
+          x = rx;
+          y = ry;
+
+          if (v) {
+              const rvx = vx * cos - vy * sin;
+              const rvy = vx * sin + vy * cos;
+              vx = rvx;
+              vy = rvy;
+          }
+      }
+
+      // 6. Offset
+      x += this.offsetX;
+      y += this.offsetY;
+
+      return {
+          point: new Vector2(x, y),
+          vector: v ? new Vector2(vx, vy) : null
+      };
+  }
+
+  /**
    * @method transform
    * @description Applies scaling, flipping, and offsets to a point.
    * @param {Vector2} p - The point to transform.
    * @returns {Object} The transformed coordinates {x, y}.
    */
   transform(p) {
-      let x = (p.x * this.scale);
-      if (this.flipX) {
-          x = -x;
-      }
-      x += this.offsetX;
-      let y = (p.y * this.scale);
-      if (this.flipY) {
-          y = -y;
-      }
-      y += this.offsetY;
-      return { x, y };
+      const res = this.transformPointAndVector(p);
+      return { x: res.point.x, y: res.point.y };
   }
 
   normalizeMethod(method = 'thru_cut') {
@@ -1031,7 +1130,7 @@ class SvgConverter {
                 const p = getPt(0);
 
                 if (state.isPenDown || Math.abs(state.machineZ - this.zUp) > 0.001) {
-                    this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate);
+                    this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.zFeedRate);
                     state.isPenDown = false;
                 }
 
@@ -1132,7 +1231,7 @@ class SvgConverter {
     });
 
     if (state.isPenDown || Math.abs(state.machineZ - this.zUp) > 0.001) {
-        this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate);
+        this.emitPoint(data, state, state.machineX, state.machineY, this.zUp, 0, 0, -this.zFeedRate);
         state.isPenDown = false;
     }
 
@@ -1299,13 +1398,13 @@ class SvgConverter {
           // Orient (rotation only, no Z move yet)
           pushLine(state.machineX, state.machineY, this.zUp, 0, 0, 0, targetA);
           // Plunge
-          pushLine(state.machineX, state.machineY, z, 0, 0, this.feedRate, targetA);
+          pushLine(state.machineX, state.machineY, z, 0, 0, this.zFeedRate, targetA);
           state.isPenDown = true;
       } else if (state.isPenDown && Math.abs(diff) > this.angleThreshold && z !== this.zUp) {
           // Lift, Orient, Plunge sequence for sharp corners
-          pushLine(state.machineX, state.machineY, this.zUp, 0, 0, -this.feedRate, state.machineA);
+          pushLine(state.machineX, state.machineY, this.zUp, 0, 0, -this.zFeedRate, state.machineA);
           pushLine(state.machineX, state.machineY, this.zUp, 0, 0, 0, targetA);
-          pushLine(state.machineX, state.machineY, z, 0, 0, this.feedRate, targetA);
+          pushLine(state.machineX, state.machineY, z, 0, 0, this.zFeedRate, targetA);
       }
 
       // Purely Z-up moves should keep current orientation
@@ -1401,11 +1500,10 @@ class SvgConverter {
           }
 
           const pRaw = bezier.sample(tFound);
-          const p = this.transform(pRaw);
-
           const vRaw = bezier.getVelocity(tFound);
-          let vx = this.flipX ? -vRaw.x * this.scale : vRaw.x * this.scale;
-          let vy = this.flipY ? -vRaw.y * this.scale : vRaw.y * this.scale;
+          const { point: p, vector: vTrans } = this.transformPointAndVector(pRaw, vRaw);
+          let vx = vTrans.x;
+          let vy = vTrans.y;
           let vz = 0;
 
           // Normalize and apply target feedrate (mm/sec)
