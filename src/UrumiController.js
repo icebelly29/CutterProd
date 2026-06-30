@@ -137,7 +137,7 @@ export function setupUrumiCam(onGCodeReady) {
 
     // --- WebSocket handlers ---
     function connectSocket() {
-        socket = window.io(serverUrl, { reconnection: true });
+        socket = window.io(serverUrl, { reconnection: true, transports: ['websocket'] });
 
         socket.on('connect', () => {
             log("[UrumiCam] Connected to camera server.", "success");

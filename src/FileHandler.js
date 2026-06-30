@@ -255,7 +255,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 // Remove ignored elements (like the visual frame) so they aren't processed into trajectories
                 const ignoredNodes = svg.querySelectorAll('[data-ignore="true"]');
                 ignoredNodes.forEach(node => node.remove());
-                
+
                 // Re-serialize back to text so SvgConverter (which uses text parsing) ignores them
                 conversionText = new XMLSerializer().serializeToString(svg);
 
@@ -294,8 +294,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             // 3. Determine Dimensions (Complex!)
             // SVGs can use mm, cm, in, px, or no units at all.
             // We try to find the "Real World" size of the drawing.
-            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600;
-            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750;
+            const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 630;
+            const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 780;
             let w_mm = 0, h_mm = 0;
             let viewbox = [0, 0, 0, 0];
 
@@ -308,7 +308,10 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     viewbox = vbAttr.split(/[ ,]+/).map(parseFloat);
                 }
 
-                // Helper to convert strings like "10in" to mm
+                // Helper to convert strings like "10in" to mm.
+                // IMPORTANT: Per the SVG spec, unitless values are user units,
+                // which default to px (96dpi) — NOT millimeters. Treating them as
+                // mm causes 3-4x oversizing for SVGs from tools like Inkscape.
                 const parseToMM = (str) => {
                     if (!str) return 0;
                     const val = parseFloat(str);
@@ -319,15 +322,17 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     if (str.endsWith('pt')) return val * (25.4 / 72);
                     if (str.endsWith('pc')) return val * (25.4 / 6);
                     if (str.endsWith('px')) return val * 0.264583;
-                    return val; // Assume mm if no unit provided
+                    // No unit → SVG user units (px). Convert px → mm.
+                    return val * 0.264583;
                 };
 
                 w_mm = parseToMM(wAttr);
                 h_mm = parseToMM(hAttr);
 
-                // Fallback: If width/height are missing, use ViewBox width/height
-                if (w_mm === 0 && viewbox.length === 4) w_mm = viewbox[2];
-                if (h_mm === 0 && viewbox.length === 4) h_mm = viewbox[3];
+                // Fallback: If width/height are missing, use ViewBox width/height.
+                // ViewBox units are also SVG user units (px), so apply px→mm.
+                if (w_mm === 0 && viewbox.length === 4) w_mm = viewbox[2] * 0.264583;
+                if (h_mm === 0 && viewbox.length === 4) h_mm = viewbox[3] * 0.264583;
             }
 
             // --- SCALING & MAPPING LOGIC ---
@@ -336,6 +341,8 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
             let finalOffsetY = 0;
             let finalW = 0;
             let finalH = 0;
+            let flipX = false;
+            let flipY = false;
 
             let vbW = viewbox.length === 4 ? viewbox[2] : w_mm;
             let vbH = viewbox.length === 4 ? viewbox[3] : h_mm;
@@ -346,9 +353,9 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 // Direct physical mapping from UrumiCam bed scanner
                 scale = 1.0 / resolvedUrumiMeta.dots_per_mm;
 
-                // The machine's physical origin is bottom-right, so camera-space
-                // X and Y must both be mirrored into machine-space.
-                finalOffsetX = resolvedUrumiMeta.physical_width;
+                // The machine's physical origin is bottom-left, so camera-space
+                // X is direct, and Y must be mirrored into machine-space.
+                finalOffsetX = 0;
                 finalOffsetY = resolvedUrumiMeta.physical_height;
 
                 finalW = resolvedUrumiMeta.physical_width;
@@ -359,6 +366,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
 
                 // 1. Calculate initial scale (Unit Conversion)
                 scale = (vbW > 0) ? (w_mm / vbW) : 1.0;
+                log(`SVG parse: w_attr="${svg.getAttribute('width')}" → w_mm=${w_mm.toFixed(3)}mm, viewBox w=${vbW.toFixed(1)}, scale=${scale.toFixed(6)}`, 'info');
 
                 const margin = 10; // 10mm safety margin
                 let currentW = vbW * scale;
@@ -377,44 +385,49 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                 finalW = vbW * scale;
                 finalH = vbH * scale;
 
-                let offsetX = 0;
-                let offsetY = 0;
-
-                if (!isCanvas) {
-                    offsetX = (bedW - finalW) / 2;
-                    offsetY = (bedH - finalH) / 2;
-                }
-
+                // Read inversion checkboxes
                 const vbMinX = viewbox.length === 4 ? viewbox[0] : 0;
                 const vbMinY = viewbox.length === 4 ? viewbox[1] : 0;
 
+                let invertXElement = document.getElementById('invertXCheckbox');
+                flipX = invertXElement ? invertXElement.checked : false;
+
+                let invertYElement = document.getElementById('invertYCheckbox');
+                flipY = invertYElement ? invertYElement.checked : false;
+
+                // Canvas SVGs and UrumiCam Captures:
+                // Both need the machine's true bottom-left origin, so force Y flip.
+                // The inversion checkboxes apply only to externally-loaded SVG files.
+                const isCanvasSrc = !resolvedUrumiMeta && svg && svg.getAttribute('data-source') === 'canvas';
+                if (isCanvasSrc || resolvedUrumiMeta) {
+                    flipX = false;
+                    flipY = true;
+                }
+
                 // Align to center or leave at 0,0 for Canvas
                 if (isCanvas) {
-                    // The draw canvas is authored in a bottom-left logical space,
-                    // but the machine's real origin is bottom-right.
-                    finalOffsetX = bedW;
+                    // The draw canvas is authored in a top-left logical space,
+                    // but the machine's real origin is bottom-left.
+                    finalOffsetX = 0;
                     finalOffsetY = bedH;
                 } else {
-                    // Normalize standard SVGs to 0,0 and then shift to centered offsetX
-                    finalOffsetX = offsetX - (vbMinX * scale);
-                    finalOffsetY = offsetY - (vbMinY * scale);
+                    let offsetX = (bedW - finalW) / 2;
+                    let offsetY = (bedH - finalH) / 2;
+
+                    // Normalize standard SVGs to 0,0 and then shift to centered position
+                    // We must account for inversion to keep the bounding box centered
+                    if (flipX) {
+                        finalOffsetX = offsetX + finalW + (vbMinX * scale);
+                    } else {
+                        finalOffsetX = offsetX - (vbMinX * scale);
+                    }
+
+                    if (flipY) {
+                        finalOffsetY = offsetY + finalH + (vbMinY * scale);
+                    } else {
+                        finalOffsetY = offsetY - (vbMinY * scale);
+                    }
                 }
-            }
-
-            // Read inversion checkboxes
-            let invertXElement = document.getElementById('invertXCheckbox');
-            let flipX = invertXElement ? invertXElement.checked : false;
-
-            let invertYElement = document.getElementById('invertYCheckbox');
-            let flipY = invertYElement ? invertYElement.checked : false;
-
-            // Canvas SVGs and UrumiCam Captures:
-            // Both need the machine's true bottom-right origin, so force both flips.
-            // The inversion checkboxes apply only to externally-loaded SVG files.
-            const isCanvasSrc = !resolvedUrumiMeta && svg && svg.getAttribute('data-source') === 'canvas';
-            if (isCanvasSrc || resolvedUrumiMeta) {
-                flipX = true;
-                flipY = true;
             }
 
 
@@ -432,14 +445,14 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
 
                 const stepsPerMM_X = axisSteps('xStepsPerMM', 160);
                 const stepsPerMM_Y = axisSteps('yStepsPerMM', 160);
-                const stepsPerMM_Z = axisSteps('zStepsPerMM', 1200);
-                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 103);
+                const stepsPerMM_Z = axisSteps('zStepsPerMM', 300);
+                const stepsPerDeg_A = axisSteps('aStepsPerDeg', 51.6);
 
                 const cuttingSpeedInput = document.getElementById('cuttingSpeedInput');
                 const cuttingSpeed = cuttingSpeedInput ? parseFloat(cuttingSpeedInput.value) : 30;
 
                 const zSpeedInput = document.getElementById('zSpeedInput');
-                const zSpeed = zSpeedInput ? parseFloat(zSpeedInput.value) : 5;
+                const zSpeed = zSpeedInput ? parseFloat(zSpeedInput.value) : 4;
 
                 const idX = parseInt(document.getElementById('xRs485Id')?.value) || 3;
                 const idY = parseInt(document.getElementById('yRs485Id')?.value) || 2;
@@ -484,6 +497,7 @@ export async function handleFile(file, onGCodeReady, onSwitchTab, urumiMeta = nu
                     docH: finalH
                 });
                 const result = converter.convert(conversionText);
+                log(`Converting: scale=${scale.toFixed(6)}, offsetX=${finalOffsetX.toFixed(2)}, offsetY=${finalOffsetY.toFixed(2)}, flipX=${flipX}, flipY=${flipY}, output=${finalW.toFixed(1)}x${finalH.toFixed(1)}mm`, 'info');
 
                 onGCodeReady(result, stepsPerMM_X);
                 log(`Converted (Size: ${finalW.toFixed(1)}x${finalH.toFixed(1)}mm)`, 'success');

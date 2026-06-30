@@ -47,7 +47,7 @@ export function packMicrosegment(dx, dy, dz, da, interval, flags = 0, seq = 0) {
 
     view.setUint8(0, 0xAB);
     view.setInt32(1, dx, true);
-    view.setInt32(5, -dy, true); // Invert Y for physical hardware
+    view.setInt32(5, dy, true);
     view.setInt32(9, dz, true);
     view.setInt32(13, da, true);
     view.setUint32(17, interval, true);

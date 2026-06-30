@@ -32,6 +32,7 @@
  */
 
 import SvgConverter from './SvgConverter.js?v=5';
+import { CoordinateMapper } from './CoordinateMapper.js';
 
 // ─── Shape Types ──────────────────────────────────────────────────────────────
 
@@ -107,8 +108,8 @@ function smoothPolyline(points, iterations = 2) {
 // pre-flip both axes here. FileHandler then applies flipX/flipY to recover the
 // original machine-space coordinates without introducing a mirror.
 function shapeToPathD(shape, bedW, bedH) {
-    const fx = x => (bedW - x);
-    const fy = y => (bedH - y); // machine Y-up → SVG Y-down
+    const fx = x => CoordinateMapper.machineToTL(x, 0, bedW, bedH).x;
+    const fy = y => CoordinateMapper.machineToTL(0, y, bedW, bedH).y; // machine Y-up → SVG Y-down
     switch (shape.type) {
         case 'group': {
             return shape.children.map(child => shapeToPathD(child, bedW, bedH)).join(' ');
@@ -340,6 +341,10 @@ export class CanvasEditor {
         this._marqueeStart = null; // { mx, my } for rectangular selection
         this._marqueeEnd = null;
 
+        // Measure state
+        this._measureStart = null;
+        this._measureEnd = null;
+
         // Resize state
         this._resizeHandle = null; 
         this._resizeOrigin = null; 
@@ -388,6 +393,10 @@ export class CanvasEditor {
     }
 
     setTool(tool) {
+        if (this.tool === 'measure' && tool !== 'measure') {
+            this._measureStart = null;
+            this._measureEnd = null;
+        }
         this.tool = tool;
         this._draft      = null;
         this._draftPts   = [];
@@ -488,21 +497,22 @@ export class CanvasEditor {
     // ── Coordinate helpers ────────────────────────────────────────────────────
 
     _canvasToMachine(cx, cy) {
-        const { scale, offsetX, offsetY, bedW } = this.view;
-        // machine.x = bedW - ((canvas.x - offsetX) / scale)
-        // machine.y = (offsetY - canvas.y) / scale   [Y is flipped]
-        return {
-            x: bedW - ((cx - offsetX) / scale),
-            y: (offsetY - cy) / scale
-        };
+        const { scale, offsetX, offsetY } = this.view;
+        // Use native DOMMatrix inverse transformation for precise mapping
+        const matrix = new DOMMatrix()
+            .translate(0, this.canvas.height)
+            .scale(1, -1)
+            .translate(offsetX, offsetY)
+            .scale(scale, scale);
+            
+        const pt = new DOMPoint(cx, cy);
+        const machine = pt.matrixTransform(matrix.inverse());
+        return { x: machine.x, y: machine.y };
     }
 
     _machineToCanvas(mx, my) {
-        const { scale, offsetX, offsetY, bedW } = this.view;
-        return {
-            x: (bedW - mx) * scale + offsetX,
-            y: offsetY - my * scale
-        };
+        const { scale, offsetX, offsetY } = this.view;
+        return CoordinateMapper.machineToCanvas(mx, my, scale, offsetX, offsetY);
     }
 
     _eventPos(e) {
@@ -537,8 +547,9 @@ export class CanvasEditor {
         const cx = e.clientX - r.left;
         const cy = e.clientY - r.top;
 
-        const mx = this.view.bedW - ((cx - this.view.offsetX) / this.view.scale);
-        const my = (this.view.offsetY - cy) / this.view.scale;
+        const pos = this._canvasToMachine(cx, cy);
+        const mx = pos.x;
+        const my = pos.y;
 
         const zoomFactor = 1.1;
         if (e.deltaY < 0) {
@@ -551,7 +562,7 @@ export class CanvasEditor {
         this.view.scale = Math.max(0.01, Math.min(this.view.scale, 100));
 
         this.view.offsetX = cx - mx * this.view.scale;
-        this.view.offsetY = cy + my * this.view.scale;
+        this.view.offsetY = (this.canvas.height - cy) - my * this.view.scale;
 
         this.draw();
     }
@@ -603,6 +614,13 @@ export class CanvasEditor {
             return;
         }
 
+        if (this.tool === 'measure') {
+            this._measureStart = { ...mc };
+            this._measureEnd = { ...mc };
+            this.draw();
+            return;
+        }
+
         if (this.tool === 'pencil') {
             this._draftPts = [mc];
             this._draft = makePencil(this._draftPts, this.strokeWidth);
@@ -636,7 +654,7 @@ export class CanvasEditor {
             const dx = e.clientX - this._panStart.x;
             const dy = e.clientY - this._panStart.y;
             this.view.offsetX += dx;
-            this.view.offsetY += dy;
+            this.view.offsetY -= dy; // Invert Y panning for Bottom-Left origin
             this._panStart = { x: e.clientX, y: e.clientY };
             this.draw();
             return;
@@ -717,6 +735,12 @@ export class CanvasEditor {
 
         if (this.tool === 'eraser') {
             this._eraseAt(m.x, m.y);
+            this.draw();
+            return;
+        }
+
+        if (this.tool === 'measure' && this._measureStart) {
+            this._measureEnd = { ...mc };
             this.draw();
             return;
         }
@@ -871,16 +895,21 @@ export class CanvasEditor {
     draw() {
         const ctx = this.ctx;
         const { scale, offsetX, offsetY, bedW, bedH } = this.view;
-        const mapX = x => (bedW - x) * scale + offsetX;
-        const mapY = y => offsetY - y * scale;
+        const mapX = x => CoordinateMapper.machineToCanvas(x, 0, scale, offsetX, 0).x;
+        const mapY = y => CoordinateMapper.machineToCanvas(0, y, scale, 0, offsetY).y;
 
         // Clear entire canvas
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
+        // Apply native bottom-left coordinate mapping
+        ctx.save();
+        ctx.translate(0, this.canvas.height);
+        ctx.scale(1, -1);
+
         // ── Bed background ──────────────────────────────────────────────────
         ctx.save();
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(mapX(bedW), mapY(bedH), bedW * scale, bedH * scale);
+        ctx.fillRect(mapX(0), mapY(0), bedW * scale, bedH * scale);
 
         // Subtle grid — every 50mm
         ctx.strokeStyle = 'rgba(203,213,225,0.4)';
@@ -896,9 +925,11 @@ export class CanvasEditor {
             ctx.stroke();
             
             if (gx > 0 && gx < bedW && scale > 0.5) {
+                ctx.save();
+                ctx.scale(1, -1); // Un-flip for text
                 ctx.textAlign = 'center';
-                // Draw numbers along the bottom edge
-                ctx.fillText(gx, mapX(gx), mapY(0) + 12);
+                ctx.fillText(gx, mapX(gx), -(mapY(0) + 12));
+                ctx.restore();
             }
         }
         for (let gy = 0; gy <= bedH; gy += 50) {
@@ -908,9 +939,11 @@ export class CanvasEditor {
             ctx.stroke();
             
             if (gy > 0 && gy < bedH && scale > 0.5) {
-                ctx.textAlign = 'right';
-                // Draw numbers along the left edge
-                ctx.fillText(gy, mapX(0) - 4, mapY(gy) + 3);
+                ctx.save();
+                ctx.scale(1, -1); // Un-flip for text
+                ctx.textAlign = 'left';
+                ctx.fillText(gy, mapX(0) + 4, -(mapY(gy) + 3));
+                ctx.restore();
             }
         }
 
@@ -918,23 +951,33 @@ export class CanvasEditor {
         ctx.strokeStyle = '#94a3b8';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([8, 5]);
-        ctx.strokeRect(mapX(bedW), mapY(bedH), bedW * scale, bedH * scale);
+        ctx.strokeRect(mapX(0), mapY(0), bedW * scale, bedH * scale);
         ctx.setLineDash([]);
 
         // Corner labels
+        ctx.save();
+        ctx.scale(1, -1); // Un-flip for text
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '10px ui-monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('0,0 (BL)', mapX(0) + 4, -(mapY(0) - 4));
+        ctx.restore();
+
+        ctx.save();
+        ctx.scale(1, -1);
         ctx.fillStyle = '#94a3b8';
         ctx.font = '10px ui-monospace';
         ctx.textAlign = 'right';
-        ctx.fillText('0,0 (BR)', mapX(0) - 4, mapY(0) - 4);
-        ctx.textAlign = 'left';
-        ctx.fillText(`${bedW}×${bedH}mm`, mapX(bedW) - 4, mapY(bedH) + 12);
+        ctx.fillText(`${bedW}×${bedH}mm`, mapX(bedW) - 4, -(mapY(bedH) + 12));
         ctx.restore();
+
+        ctx.restore(); // end background save
 
         // ── Shapes ──────────────────────────────────────────────────────────
         // Save state and clip to the bed boundaries so shapes don't visually overflow
         ctx.save();
         ctx.beginPath();
-        ctx.rect(mapX(bedW), mapY(bedH), bedW * scale, bedH * scale);
+        ctx.rect(mapX(0), mapY(0), bedW * scale, bedH * scale);
         ctx.clip();
 
         this._drawPageFrame(ctx, mapX, mapY, scale);
@@ -964,6 +1007,56 @@ export class CanvasEditor {
             ctx.restore();
         }
 
+        // Measure Line
+        if (this._measureStart && this._measureEnd) {
+            const start = this._measureStart;
+            const end = this._measureEnd;
+            const sx = mapX(start.x), sy = mapY(start.y);
+            const ex = mapX(end.x), ey = mapY(end.y);
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const dist = Math.hypot(dx, dy);
+
+            ctx.save();
+            ctx.strokeStyle = '#eab308'; // yellow-500
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+
+            // End tick marks
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#eab308';
+            ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(ex, ey, 3, 0, Math.PI * 2); ctx.fill();
+
+            // Label
+            if (dist > 0) {
+                const label = `${dist.toFixed(1)} mm`;
+                ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const metrics = ctx.measureText(label);
+                const pad = 4;
+                const lx = (sx + ex) / 2;
+                const ly = (sy + ey) / 2 - 15;
+
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.beginPath();
+                ctx.roundRect(lx - metrics.width / 2 - pad, -(ly - 8 - pad), metrics.width + pad * 2, -(16 + pad * 2), 4);
+                ctx.fill();
+
+                ctx.save();
+                ctx.scale(1, -1);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(label, lx, -ly);
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
         // Bezier in-progress: draw placed points + live preview segment
         if (this.tool === 'bezier' && this._bezierPts.length > 0) {
             const pts = [...this._bezierPts];
@@ -987,10 +1080,15 @@ export class CanvasEditor {
                 ctx.beginPath();
                 ctx.arc(mapX(pts[i].x), mapY(pts[i].y), 5, 0, 2*Math.PI);
                 ctx.fill();
+                
+                ctx.save();
+                ctx.scale(1, -1);
                 ctx.fillStyle = '#94a3b8';
                 ctx.font = '9px ui-monospace';
                 ctx.textAlign = 'left';
-                ctx.fillText(labels[i], mapX(pts[i].x) + 8, mapY(pts[i].y) - 4);
+                ctx.fillText(labels[i], mapX(pts[i].x) + 8, -(mapY(pts[i].y) - 4));
+                ctx.restore();
+                
                 ctx.fillStyle = '#60a5fa';
             }
 
@@ -1020,15 +1118,17 @@ export class CanvasEditor {
 
             // Instruction hint
             ctx.save();
+            ctx.scale(1, -1);
             ctx.fillStyle = '#64748b';
             ctx.font = '11px ui-monospace';
             ctx.textAlign = 'center';
             const hints = ['Click to set Start','Click to set Control 1','Click to set Control 2','Click to set End'];
-            ctx.fillText(hints[pts.length] || '', mapX(this.view.bedW / 2), mapY(this.view.bedH) + 22);
+            ctx.fillText(hints[pts.length] || '', mapX(this.view.bedW / 2), -(mapY(this.view.bedH) + 22));
             ctx.restore();
         }
         
         ctx.restore(); // Restore from bed boundaries clipping
+        ctx.restore(); // Restore the root Bottom-Left projection
     }
 
     _drawPageFrame(ctx, mapX, mapY, scale) {
@@ -1043,35 +1143,40 @@ export class CanvasEditor {
         const visibleW = Math.min(frameW, bedW);
         const visibleH = Math.min(frameH, bedH);
         const clampedX = Math.max(0, x);
-        const clampedY = Math.max(0, y);
-
+        const d = { w: visibleW * scale, h: visibleH * scale };
+        
         ctx.save();
         ctx.fillStyle = 'rgba(255, 255, 255, 0.74)';
         ctx.strokeStyle = '#111827';
         ctx.lineWidth = Math.max(1, 1.25);
         ctx.setLineDash([]);
-        ctx.fillRect(mapX(clampedX + visibleW), mapY(clampedY + visibleH), visibleW * scale, visibleH * scale);
-        ctx.strokeRect(mapX(clampedX + visibleW), mapY(clampedY + visibleH), visibleW * scale, visibleH * scale);
+        ctx.fillRect(mapX(clampedX), mapY(clampedY), d.w, d.h);
+        ctx.strokeRect(mapX(clampedX), mapY(clampedY), d.w, d.h);
 
         ctx.strokeStyle = 'rgba(17, 24, 39, 0.35)';
         ctx.lineWidth = 1;
         ctx.setLineDash([6, 5]);
         const margin = 10;
         if (visibleW > margin * 2 && visibleH > margin * 2) {
+            const marginD = { w: (visibleW - margin * 2) * scale, h: (visibleH - margin * 2) * scale };
             ctx.strokeRect(
-                mapX(clampedX + visibleW - margin),
-                mapY(clampedY + visibleH - margin),
-                (visibleW - margin * 2) * scale,
-                (visibleH - margin * 2) * scale
+                mapX(clampedX + margin),
+                mapY(clampedY + margin),
+                marginD.w,
+                marginD.h
             );
         }
 
         ctx.setLineDash([]);
+        ctx.save();
+        ctx.scale(1, -1);
         ctx.fillStyle = '#111827';
         ctx.font = '11px ui-monospace';
         ctx.textAlign = 'left';
         const label = `${frame.label} ${Math.round(frameW)}×${Math.round(frameH)}mm`;
-        ctx.fillText(label, mapX(clampedX + visibleW) + 8, mapY(clampedY + visibleH) + 16);
+        // Draw label at the physical Top-Left of the frame (machine max bounds)
+        ctx.fillText(label, mapX(clampedX + visibleW) + 8, -(mapY(clampedY + visibleH) + 16));
+        ctx.restore();
         ctx.restore();
     }
 
@@ -1080,18 +1185,17 @@ export class CanvasEditor {
             shape.children.forEach(child => this._drawShape(ctx, child, mapX, mapY, scale, false, isDraft));
             if (selected) {
                 const bbox = shapeBBox(shape);
-                const bx = mapX(bbox.x + bbox.w);
-                const by = mapY(bbox.y + bbox.h);
-                const bw = bbox.w * scale;
-                const bh = bbox.h * scale;
+                const bx = mapX(bbox.x);
+                const by = mapY(bbox.y);
+                const d = { w: bbox.w * scale, h: bbox.h * scale };
                 ctx.save();
                 ctx.strokeStyle = '#10b981';
                 ctx.lineWidth   = 1;
                 ctx.setLineDash([4, 3]);
-                ctx.strokeRect(bx - 4, by - 4, bw + 8, bh + 8);
+                ctx.strokeRect(bx, by, d.w, d.h);
                 ctx.fillStyle = '#10b981';
                 ctx.setLineDash([]);
-                for (const [hx, hy] of [[bx-4,by-4],[bx+bw+4,by-4],[bx-4,by+bh+4],[bx+bw+4,by+bh+4]]) {
+                for (const [hx, hy] of [[bx, by], [bx + d.w, by], [bx, by + d.h], [bx + d.w, by + d.h]]) {
                     ctx.beginPath();
                     ctx.arc(hx, hy, 4, 0, 2 * Math.PI);
                     ctx.fill();
@@ -1137,12 +1241,14 @@ export class CanvasEditor {
             }
             case 'rect': {
                 const { x, y, w, h } = shape;
-                ctx.rect(mapX(x + w), mapY(y + h), w * scale, h * scale);
+                const d = { w: w * scale, h: h * scale };
+                ctx.rect(mapX(x), mapY(y), d.w, d.h);
                 break;
             }
             case 'circle': {
                 const { cx, cy, rx, ry } = shape;
-                ctx.ellipse(mapX(cx), mapY(cy), rx * scale, ry * scale, 0, 0, 2 * Math.PI);
+                const d = { w: rx * scale, h: (ry || rx) * scale };
+                ctx.ellipse(mapX(cx), mapY(cy), Math.abs(d.w), Math.abs(d.h), 0, 0, 2 * Math.PI);
                 break;
             }
             case 'bezier': {

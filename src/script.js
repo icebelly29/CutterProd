@@ -37,8 +37,8 @@ import { updateStatus, setStartButtonState } from './UI.js';
 import { MachineConnection } from './Connection.js';
 import { setupTabs } from './Tabs.js';
 import { renderGCode } from './Viewer.js';
-import { handleFile } from './FileHandler.js?v=6';
-import { CanvasEditor } from './CanvasEditor.js?v=4';
+import { handleFile } from './FileHandler.js?v=7';
+import { CanvasEditor } from './CanvasEditor.js?v=5';
 import { packMicrosegment } from './BinaryUtils.js';
 
 /**
@@ -49,7 +49,7 @@ import { packMicrosegment } from './BinaryUtils.js';
  * the three places that previously hard-coded mismatched defaults (80 / 800 /
  * 92.44) can no longer drift. (Assessment R3 / fix F3.)
  */
-const DEFAULT_STEPS = { X: 160, Y: 160, Z: 1200, A: 103 };
+const DEFAULT_STEPS = { X: 160, Y: 160, Z: 300, A: 51.6 };
 const URUMI_VISION_SERVER_URL = "http://localhost:5000";
 
 /**
@@ -142,6 +142,7 @@ const dropZone = document.getElementById('dropZone');
 // --- Modal Elements ---
 const configModal = document.getElementById('configModal');
 const btnSettings = document.getElementById('btnSettings');
+const btnMeasurePreview = document.getElementById('btnMeasurePreview');
 const btnCloseModal = document.getElementById('btnCloseModal');
 const segmentLengthInput = document.getElementById('segmentLengthInput');
 const segmentLengthSlider = document.getElementById('segmentLengthSlider');
@@ -308,13 +309,7 @@ function updateViewer() {
     const canvas = document.getElementById('gcodeCanvas');
     if (!canvas || !container) return;
 
-    // If the panel is hidden, getBoundingClientRect() returns 0. Use a fallback size
-    // so the render still produces valid data that the user sees on switching tabs.
-    const rect = container.getBoundingClientRect();
-    if (rect.width < 10 || rect.height < 10) {
-        canvas.width = 650;
-        canvas.height = 760;
-    }
+    // Defers to Viewer.js for handling the display:none layout edge-case.
     renderGCode(state.gcode, 'gcodeCanvas', 'canvasContainer', state.stepsPerMM, state.simulatedPathIndex, state.binaryPackets, state.packetMeta);
 }
 
@@ -323,20 +318,15 @@ function updateViewer() {
  */
 function updatePositionFromPacket(packet) {
     const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
-    const dx = view.getInt32(1, true);
-    const dy = -view.getInt32(5, true); // Un-invert Y from hardware packet
+    const dx = view.getInt32(1, true); // Un-invert X from hardware packet
+    const dy = view.getInt32(5, true); // Un-invert Y from hardware packet
     const dz = view.getInt32(9, true);
     const da = view.getInt32(13, true);
 
-    const xStepsPerMM = getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X);
-    const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
-    const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
-    const aStepsPerDeg = getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A);
-
-    jogState.posX += dx / xStepsPerMM;
-    jogState.posY += dy / yStepsPerMM;
-    jogState.posZ += -dz / zStepsPerMM; // negative steps mean Up, so we negate
-    jogState.posA += da / aStepsPerDeg;
+    jogState.stepX += dx;
+    jogState.stepY += dy;
+    jogState.stepZ += -dz; // negative steps mean Up, so we negate
+    jogState.stepA += da;
 
     document.getElementById('jogPosX').textContent = jogState.posX.toFixed(2);
     document.getElementById('jogPosY').textContent = jogState.posY.toFixed(2);
@@ -704,7 +694,7 @@ function startJob() {
     if (state.wasInterrupted && state.binaryPackets?.length) {
         const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
         const zUpStep = Math.round(12 * zStepsPerMM);
-        const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 5;
+        const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 4;
         const stepVz = Math.max(1, Math.round(zSpeed * zStepsPerMM));
         const interval = Math.max(1, Math.min(Math.round(150_000_000 / stepVz), 150_000_000));
         const retractPkt = stampSeq(packMicrosegment(0, 0, -zUpStep, 0, interval, 0x01, 0), 0);
@@ -1258,8 +1248,8 @@ if (drawCanvasEl) {
 // Recompute viewport metrics (mirrors the Viewer math)
 let hasInitializedView = false;
 function updateDrawViewMetrics() {
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750;
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 630;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 780;
 
     if (!drawContainer || !drawCanvasEl) return;
     const rect = drawContainer.getBoundingClientRect();
@@ -1275,7 +1265,7 @@ function updateDrawViewMetrics() {
         const scale = Math.min(availW / bedW, availH / bedH);
 
         const offsetX = drawCanvasEl.width / 2 - (bedW / 2) * scale;
-        const offsetY = drawCanvasEl.height / 2 + (bedH / 2) * scale;
+        const offsetY = drawCanvasEl.height / 2 - (bedH / 2) * scale;
 
         Object.assign(drawViewState, { scale, offsetX, offsetY, bedW, bedH });
         hasInitializedView = true;
@@ -1474,13 +1464,13 @@ function visionAssetUrl(pathOrUrl, serverUrl = URUMI_VISION_SERVER_URL) {
 
 function setVisionStatus(message, kind = "info") {
     if (!visionStatus) return;
-    
+
     if (kind === 'loading') {
         visionStatus.innerHTML = `<span style="display:inline-block; margin-right:8px; width:12px; height:12px; border:2px solid var(--text-muted); border-top-color:var(--text-primary); border-radius:50%; animation:spin 1s linear infinite;"></span>${message}`;
     } else {
         visionStatus.textContent = message;
     }
-    
+
     visionStatus.classList.toggle('success', kind === 'success');
     visionStatus.classList.toggle('error', kind === 'error');
 }
@@ -1744,8 +1734,8 @@ function buildVisionTraceSvg(groupedPaths, width, height) {
 
 function getBedSizeMM() {
     return {
-        bedW: parseFloat(document.getElementById('bedWidthInput')?.value) || 600,
-        bedH: parseFloat(document.getElementById('bedHeightInput')?.value) || 750
+        bedW: parseFloat(document.getElementById('bedWidthInput')?.value) || 630,
+        bedH: parseFloat(document.getElementById('bedHeightInput')?.value) || 780
     };
 }
 
@@ -1757,12 +1747,11 @@ function hasUsableVisionMeta(meta) {
 
 function visionPixelPointToCanvasSvgPoint(point, meta, bedW, bedH) {
     const dotsPerMM = Number(meta.dots_per_mm);
-    const physicalWidth = Number(meta.physical_width);
     const physicalHeight = Number(meta.physical_height);
-    const machineX = physicalWidth - (point.x / dotsPerMM);
+    const machineX = point.x / dotsPerMM;
     const machineY = physicalHeight - (point.y / dotsPerMM);
     return {
-        x: bedW - machineX,
+        x: machineX,
         y: bedH - machineY
     };
 }
@@ -2133,7 +2122,7 @@ function setupUrumiCamPushListener() {
 
     loadSocketIO().then((io) => {
         if (!io) return;
-        const socket = io(serverUrl, { reconnection: true });
+        const socket = io(serverUrl, { reconnection: true, transports: ['websocket'] });
 
         socket.on('connect', () => {
             console.log("[UrumiCam Bridge] Connected to UrumiCam background listener.");
@@ -2599,6 +2588,23 @@ btnSettings.addEventListener('click', () => {
     setTimeout(() => configModal.classList.add('visible'), 10);
 });
 
+// Measure Toggle for Trajectory Preview
+btnMeasurePreview.addEventListener('click', () => {
+    const canvas = document.getElementById('gcodeCanvas');
+    if (canvas && canvas._trajectoryViewport) {
+        const vp = canvas._trajectoryViewport;
+        vp.measureMode = !vp.measureMode;
+        if (!vp.measureMode) {
+            vp.measureStartX = null;
+            vp.measureStartY = null;
+            vp.measureEndX = null;
+            vp.measureEndY = null;
+        }
+        btnMeasurePreview.classList.toggle('active', vp.measureMode);
+        canvas._renderTrajectory?.();
+    }
+});
+
 const closeModal = () => {
     configModal.classList.remove('visible');
     setTimeout(() => configModal.classList.add('hidden'), 300); // match transition duration
@@ -2648,10 +2654,18 @@ dropZone.addEventListener('drop', (e) => {
  */
 const jogState = {
     step: 0.1,        // Current step size in mm
-    posX: 0,
-    posY: 0,
-    posZ: 0,
-    posA: 0,
+    stepX: 0,
+    stepY: 0,
+    stepZ: 0,
+    stepA: 0,
+    get posX() { return this.stepX / getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X); },
+    set posX(val) { this.stepX = Math.round(val * getAxisSteps('xStepsPerMM', DEFAULT_STEPS.X)); },
+    get posY() { return this.stepY / getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y); },
+    set posY(val) { this.stepY = Math.round(val * getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y)); },
+    get posZ() { return this.stepZ / getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z); },
+    set posZ(val) { this.stepZ = Math.round(val * getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z)); },
+    get posA() { return this.stepA / getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A); },
+    set posA(val) { this.stepA = Math.round(val * getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A)); }
 };
 
 const jogModal = document.getElementById('jogModal');
@@ -2707,7 +2721,7 @@ function sendJog(dx, dy, dz, da = 0) {
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
     const aStepsPerDeg = getAxisSteps('aStepsPerDeg', DEFAULT_STEPS.A);
     const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
-    const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 5;
+    const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 4;
 
     // 2. Calculate relative steps
     // Note: Z-axis convention is positive for DOWN, so we negate dz (Up is positive)
@@ -2722,7 +2736,7 @@ function sendJog(dx, dy, dz, da = 0) {
     const maxAbsStep = Math.max(Math.abs(relX), Math.abs(relY), Math.abs(relZ), Math.abs(relA));
     let stepsPerUnitOfMaxAxis = 1.0;
     let effectiveFeedRate = feedRate;
-    
+
     if (maxAbsStep === Math.abs(relX)) {
         stepsPerUnitOfMaxAxis = xStepsPerMM;
     } else if (maxAbsStep === Math.abs(relY)) {
@@ -2745,8 +2759,6 @@ function sendJog(dx, dy, dz, da = 0) {
     } else {
         state.activeRunType = 'jog';
         state.isSending = true;
-        // Update dead-reckoning position display using exact steps
-        updatePositionFromPacket(packet);
 
         // Jogging should never run the suction bed.
         sendSuctionCommands(false, false);
@@ -2761,8 +2773,8 @@ function sendJog(dx, dy, dz, da = 0) {
 }
 
 // D-pad and Z buttons
-document.getElementById('jogXPlus').addEventListener('click', () => sendJog(jogState.step, 0, 0, 0));
-document.getElementById('jogXMinus').addEventListener('click', () => sendJog(-jogState.step, 0, 0, 0));
+document.getElementById('jogXPlus').addEventListener('click', () => sendJog(-jogState.step, 0, 0, 0));
+document.getElementById('jogXMinus').addEventListener('click', () => sendJog(jogState.step, 0, 0, 0));
 document.getElementById('jogYPlus').addEventListener('click', () => sendJog(0, jogState.step, 0, 0));
 document.getElementById('jogYMinus').addEventListener('click', () => sendJog(0, -jogState.step, 0, 0));
 document.getElementById('jogZPlus').addEventListener('click', () => sendJog(0, 0, jogState.step, 0));
@@ -2788,7 +2800,7 @@ function goToZero() {
     const yStepsPerMM = getAxisSteps('yStepsPerMM', DEFAULT_STEPS.Y);
     const zStepsPerMM = getAxisSteps('zStepsPerMM', DEFAULT_STEPS.Z);
     const feedRate = parseFloat(document.getElementById('cuttingSpeedInput')?.value) || 30;
-    const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 5;
+    const zSpeed = parseFloat(document.getElementById('zSpeedInput')?.value) || 4;
 
     const cmds = [];
 
@@ -2881,8 +2893,8 @@ function handleJogKey(e) {
  * @returns {Array<number>} List of active zone IDs (1-6).
  */
 function calculateActiveZones(gcode, packets = []) {
-    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 600;
-    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 750;
+    const bedW = parseFloat(document.getElementById('bedWidthInput')?.value) || 630;
+    const bedH = parseFloat(document.getElementById('bedHeightInput')?.value) || 780;
 
     const lines = gcode.split('\n');
     let cur = { x: 0, y: 0 };
@@ -2892,10 +2904,10 @@ function calculateActiveZones(gcode, packets = []) {
 
     const addZone = (x, y) => {
         // Clamp bounds to prevent array index overflow. The machine origin is
-        // bottom-right, so +X moves leftward across the bed.
+        // bottom-left, so +X moves rightward across the bed.
         const cx = Math.max(0, Math.min(bedW - 0.001, x));
         const cy = Math.max(0, Math.min(bedH - 0.001, y));
-        const leftBasedX = Math.max(0, Math.min(bedW - 0.001, bedW - cx));
+        const leftBasedX = cx;
 
         const col = Math.floor(leftBasedX / (bedW / 3)); // 0 to 2, left to right
         const row = cy >= (bedH / 2) ? 0 : 1;           // Row 0 is Top, Row 1 is Bottom

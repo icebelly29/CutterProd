@@ -43,6 +43,12 @@ export function setupTabs(getState, drawBridge = null) {
             drawBridge.deactivate();
         }
 
+        // 4.5 Hide Trajectory Preview Measure Button unless we are on the Trajectory tab
+        const btnMeasurePreview = document.getElementById('btnMeasurePreview');
+        if (btnMeasurePreview) {
+            btnMeasurePreview.style.display = (tabName === 'gcode-preview') ? '' : 'none';
+        }
+
         // 5. Show the requested panel
         if (tabName === 'gcode-preview') {
             document.getElementById('gcodePreview').classList.remove('hidden');

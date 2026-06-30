@@ -60,7 +60,8 @@
                 <div class="suction-body" id="suctionPanelBody" style="display: none;">
                     <div class="suction-row">
                         <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
-                            Vacuum is binary on this machine: <code>suction 1</code> turns it on and <code>suction 0</code> turns it off.
+                            Vacuum is binary on this machine: <code>suction 1</code> turns it on and
+                            <code>suction 0</code> turns it off.
                             Zone routing is sent as separate <code>servo &lt;zone&gt; &lt;0|1&gt;</code> commands.
                         </div>
                     </div>
@@ -96,17 +97,23 @@
                             Sections</span>
                         <div class="suction-grid">
                             <div class="suction-cell" data-zone="1" title="Section 1 (Top Left)">
-                                <span>1</span><small>Top L</small></div>
+                                <span>1</span><small>Top L</small>
+                            </div>
                             <div class="suction-cell" data-zone="2" title="Section 2 (Top Middle)">
-                                <span>2</span><small>Top M</small></div>
+                                <span>2</span><small>Top M</small>
+                            </div>
                             <div class="suction-cell" data-zone="3" title="Section 3 (Top Right)">
-                                <span>3</span><small>Top R</small></div>
+                                <span>3</span><small>Top R</small>
+                            </div>
                             <div class="suction-cell" data-zone="4" title="Section 4 (Bottom Left)">
-                                <span>4</span><small>Bot L</small></div>
+                                <span>4</span><small>Bot L</small>
+                            </div>
                             <div class="suction-cell" data-zone="5" title="Section 5 (Bottom Middle)">
-                                <span>5</span><small>Bot M</small></div>
+                                <span>5</span><small>Bot M</small>
+                            </div>
                             <div class="suction-cell" data-zone="6" title="Section 6 (Bottom Right)">
-                                <span>6</span><small>Bot R</small></div>
+                                <span>6</span><small>Bot R</small>
+                            </div>
                         </div>
                     </div>
             </section>
@@ -148,7 +155,8 @@
         <section class="workspace-panel">
             <div class="toolbar">
                 <div class="tabs">
-                    <div class="tab active" data-tab="gcode-preview" onclick="switchTab('gcode-preview')">Trajectory Preview</div>
+                    <div class="tab active" data-tab="gcode-preview" onclick="switchTab('gcode-preview')">Trajectory
+                        Preview</div>
                     <div class="tab" data-tab="svg-preview" onclick="switchTab('svg-preview')">SVG Preview</div>
                     <div class="tab" data-tab="editor" onclick="switchTab('editor')">Data Editor</div>
                     <div class="tab" data-tab="draw" onclick="switchTab('draw')">Draw</div>
@@ -164,6 +172,17 @@
                             </path>
                         </svg>
                         Settings
+                    </button>
+                    <button class="btn btn-action" id="btnMeasurePreview" title="Toggle Measure Mode">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" class="btn-icon-svg">
+                            <path d="M21 21L3 3" />
+                            <path d="M16 4l4 4" />
+                            <path d="M12 8l4 4" />
+                            <path d="M8 12l4 4" />
+                            <path d="M4 16l4 4" />
+                        </svg>
+                        Measure
                     </button>
                     <button class="btn btn-action" id="btnJog" title="Jog Machine">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -191,6 +210,17 @@
                             <path d="M5 3l14 9-7 1-4 7z" />
                         </svg>
                         Select
+                    </button>
+                    <button class="draw-tool-btn" id="dtMeasure" data-tool="measure" title="Measure (M)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 21L3 3" />
+                            <path d="M16 4l4 4" />
+                            <path d="M12 8l4 4" />
+                            <path d="M8 12l4 4" />
+                            <path d="M4 16l4 4" />
+                        </svg>
+                        Measure
                     </button>
                     <button class="draw-tool-btn" id="dtPencil" data-tool="pencil" title="Freehand Pencil (P)">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -301,8 +331,10 @@
                         <input type="hidden" id="drawShapeMethod" value="thru_cut">
                     </div>
                     <div class="draw-palette-actions">
-                        <button class="btn btn-action" id="btnDrawGroup" title="Group selected shapes (Ctrl+G)">Group</button>
-                        <button class="btn btn-action" id="btnDrawUngroup" title="Ungroup selected shapes (Ctrl+Shift+G)">Ungroup</button>
+                        <button class="btn btn-action" id="btnDrawGroup"
+                            title="Group selected shapes (Ctrl+G)">Group</button>
+                        <button class="btn btn-action" id="btnDrawUngroup"
+                            title="Ungroup selected shapes (Ctrl+Shift+G)">Ungroup</button>
                         <button class="btn btn-action" id="btnDrawImport" title="Import SVG to edit">Import SVG</button>
                         <input type="file" id="drawFileInput" accept=".svg" style="display: none;">
                         <button class="btn btn-action" id="btnDrawSkeletonize"
@@ -325,8 +357,29 @@
                         <div class="empty-subtext">Supports .txt, .csv, .svg</div>
                     </div>
                     <div id="canvasContainer" class="hidden"
-                        style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; overflow:hidden;">
+                        style="width:100%; height:100%; display:flex; justify-content:center; align-items:center; overflow:hidden; position: relative;">
                         <canvas id="gcodeCanvas"></canvas>
+
+                        <!-- Shape Stats Overlay -->
+                        <div id="shapeStatsOverlay" class="shape-stats-overlay hidden">
+                            <div class="stats-header">Selected Shape</div>
+                            <div class="stats-row">
+                                <span class="stats-label">ID</span>
+                                <span class="stats-value" id="statsShapeId">-</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Length</span>
+                                <span class="stats-value" id="statsShapeLength">0 mm</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Width</span>
+                                <span class="stats-value" id="statsShapeWidth">0 mm</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Height</span>
+                                <span class="stats-value" id="statsShapeHeight">0 mm</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -364,11 +417,14 @@
                                 <p>Take one clear photo with the full ArUco frame visible.</p>
                                 <p>Keep the phone as straight above the bed as possible.</p>
                             </div>
-                            <a class="vision-phone-link" id="visionPhoneLink" href="#" target="_blank" rel="noopener">Preparing phone link...</a>
-                            <button class="vision-refresh-button" id="btnVisionRefreshQr" type="button">Refresh QR</button>
+                            <a class="vision-phone-link" id="visionPhoneLink" href="#" target="_blank"
+                                rel="noopener">Preparing phone link...</a>
+                            <button class="vision-refresh-button" id="btnVisionRefreshQr" type="button">Refresh
+                                QR</button>
                             <div class="vision-divider"><span>OR</span></div>
                             <input type="file" id="visionPhotoInput" accept="image/*" style="display:none;">
-                            <button class="vision-upload-button" id="btnVisionUpload" type="button">Upload from Computer</button>
+                            <button class="vision-upload-button" id="btnVisionUpload" type="button">Upload from
+                                Computer</button>
                             <div class="vision-status" id="visionStatus">Waiting for a bed photo.</div>
                         </section>
 
@@ -403,19 +459,22 @@
                                 </div>
                                 <div class="vision-actions">
                                     <button class="btn btn-start" id="btnVisionImport" disabled>Import Trace</button>
-                                    <button class="btn btn-dark" id="btnVisionImportCanvas" disabled type="button">Edit in Draw</button>
+                                    <button class="btn btn-dark" id="btnVisionImportCanvas" disabled type="button">Edit
+                                        in Draw</button>
                                     <button class="btn btn-dark" id="btnVisionReset" type="button">New Photo</button>
                                 </div>
                                 <details class="vision-tuning">
                                     <summary>Path cleanup</summary>
                                     <label class="vision-slider-row">
                                         <span>Simplify</span>
-                                        <input type="range" id="visionSimplifySlider" min="1" max="12" value="5" step="0.5">
+                                        <input type="range" id="visionSimplifySlider" min="1" max="12" value="5"
+                                            step="0.5">
                                         <output id="visionSimplifyValue">5</output>
                                     </label>
                                     <label class="vision-slider-row">
                                         <span>Min path</span>
-                                        <input type="range" id="visionMinPathSlider" min="4" max="80" value="16" step="1">
+                                        <input type="range" id="visionMinPathSlider" min="4" max="80" value="16"
+                                            step="1">
                                         <output id="visionMinPathValue">16</output>
                                     </label>
                                 </details>
@@ -423,7 +482,7 @@
                                     <span>Clean Mask</span>
                                     <img id="visionMaskPreview" alt="">
                                 </div>
-                            </div>
+                            </aside>
                         </section>
                     </div>
                 </div>
@@ -546,8 +605,8 @@
                 <div class="form-group">
                     <label for="zSpeedInput">Z-Axis Speed (mm/sec):</label>
                     <div class="slider-input-group">
-                        <input type="range" id="zSpeedSlider" value="5" step="1" min="1" max="7">
-                        <input type="number" id="zSpeedInput" value="5" step="1" min="1" max="7">
+                        <input type="range" id="zSpeedSlider" value="4" step="1" min="1" max="7">
+                        <input type="number" id="zSpeedInput" value="4" step="1" min="1" max="7">
                     </div>
                     <span class="help-text">Target speed for Z-axis moves (lifting/plunging). Maximum 7.</span>
                 </div>
@@ -585,11 +644,11 @@
                     <div class="axis-group-label">Physical Dimensions</div>
                     <div class="axis-row" style="grid-template-columns: repeat(4, 1fr);">
                         <div class="axis-cell">
-                            <input type="number" id="bedWidthInput" value="770" step="10" min="100">
+                            <input type="number" id="bedWidthInput" value="630" step="10" min="100">
                             <span>Bed Width (mm)</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="bedHeightInput" value="960" step="10" min="100">
+                            <input type="number" id="bedHeightInput" value="780" step="10" min="100">
                             <span>Bed Height (mm)</span>
                         </div>
                         <div class="axis-cell">
@@ -601,17 +660,21 @@
                             <span>Gantry Height (mm)</span>
                         </div>
                     </div>
-                    <div class="form-group" style="margin-top: 1rem; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 8px;">
+                    <div class="form-group"
+                        style="margin-top: 1rem; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 8px;">
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <input type="checkbox" id="invertXCheckbox" checked style="width: 16px; height: 16px;">
-                            <label for="invertXCheckbox" style="margin-bottom: 0;">Invert SVG X-Axis (Default for Origin at Bottom-Right)</label>
+                            <label for="invertXCheckbox" style="margin-bottom: 0;">Invert SVG X-Axis (Default for Origin
+                                at Bottom-Right)</label>
                         </div>
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <input type="checkbox" id="invertYCheckbox" checked style="width: 16px; height: 16px;">
-                            <label for="invertYCheckbox" style="margin-bottom: 0;">Invert SVG Y-Axis (Default for Origin at Bottom-Right)</label>
+                            <label for="invertYCheckbox" style="margin-bottom: 0;">Invert SVG Y-Axis (Default for Origin
+                                at Bottom-Right)</label>
                         </div>
                     </div>
-                    <span class="help-text" style="display: block; margin-top: 4px;">Uncheck X if your machine origin is on the left. Uncheck Y if your origin is at the top.</span>
+                    <span class="help-text" style="display: block; margin-top: 4px;">Uncheck X if your machine origin is
+                        on the left. Uncheck Y if your origin is at the top.</span>
                 </div>
                 <hr class="modal-divider">
 
@@ -619,7 +682,7 @@
                     <div class="axis-group-label">X-Axis</div>
                     <div class="axis-row">
                         <div class="axis-cell">
-                            <input type="number" id="xRs485Id" value="3" step="1" min="1" max="255">
+                            <input type="number" id="xRs485Id" value="1" step="1" min="1" max="255">
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
@@ -647,11 +710,11 @@
                     <div class="axis-group-label">Z-Axis</div>
                     <div class="axis-row">
                         <div class="axis-cell">
-                            <input type="number" id="zRs485Id" value="1" step="1" min="1" max="255">
+                            <input type="number" id="zRs485Id" value="3" step="1" min="1" max="255">
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="zStepsPerMM" value="1200" step="0.1" min="0.1">
+                            <input type="number" id="zStepsPerMM" value="300" step="0.1" min="0.1">
                             <span>Steps/MM</span>
                         </div>
                     </div>
@@ -665,7 +728,7 @@
                             <span>RS485 ID</span>
                         </div>
                         <div class="axis-cell">
-                            <input type="number" id="aStepsPerDeg" value="120" step="0.1" min="0.1">
+                            <input type="number" id="aStepsPerDeg" value="51.6" step="0.1" min="0.1">
                             <span>Steps/Deg</span>
                         </div>
                     </div>
@@ -678,7 +741,7 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
     <script src="trace_skeleton.js"></script>
-    <script type="module" src="script.js?v=21"></script>
+    <script type="module" src="script.js?v=22"></script>
 
 </body>
 
