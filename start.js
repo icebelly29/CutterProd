@@ -14,8 +14,8 @@ try {
     const packageDir = path.join(__dirname, 'svg-trajectory-converter');
     execSync('node build.js', { cwd: packageDir, stdio: 'inherit' });
     
-    // 2. Copy index.js to src/SvgConverter.js
-    const srcFile = path.join(packageDir, 'index.js');
+    // 2. Copy index.esm.js to src/SvgConverter.js
+    const srcFile = path.join(packageDir, 'index.esm.js');
     const destFile = path.join(__dirname, 'src', 'SvgConverter.js');
     fs.copyFileSync(srcFile, destFile);
     console.log('\x1b[32m%s\x1b[0m', '✓ SvgConverter synchronized successfully.\n');

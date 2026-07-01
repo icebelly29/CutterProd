@@ -60,6 +60,12 @@ const URUMI_VISION_SERVER_URL = "http://localhost:5000";
 function stampSeq(packet, seq) {
     const buf = new Uint8Array(26);
     buf.set(packet);
+    
+    // Invert X-axis purely at export stage for the machine hardware
+    const view = new DataView(buf.buffer);
+    const dx = view.getInt32(1, true);
+    view.setInt32(1, -dx, true);
+    
     buf[22] = seq & 0xFF;
     // Recompute CRC over bytes [0..24]
     let crc = 0;

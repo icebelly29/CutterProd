@@ -1002,8 +1002,8 @@ export class CanvasEditor {
             const y = Math.min(this._marqueeStart.my, this._marqueeEnd.y);
             const w = Math.abs(this._marqueeStart.mx - this._marqueeEnd.x);
             const h = Math.abs(this._marqueeStart.my - this._marqueeEnd.y);
-            ctx.fillRect(mapX(x + w), mapY(y+h), w*scale, h*scale);
-            ctx.strokeRect(mapX(x + w), mapY(y+h), w*scale, h*scale);
+            ctx.fillRect(mapX(x), mapY(y), w*scale, h*scale);
+            ctx.strokeRect(mapX(x), mapY(y), w*scale, h*scale);
             ctx.restore();
         }
 
@@ -1143,6 +1143,7 @@ export class CanvasEditor {
         const visibleW = Math.min(frameW, bedW);
         const visibleH = Math.min(frameH, bedH);
         const clampedX = Math.max(0, x);
+        const clampedY = Math.max(0, y);
         const d = { w: visibleW * scale, h: visibleH * scale };
         
         ctx.save();
@@ -1287,8 +1288,8 @@ export class CanvasEditor {
         // Selection bounding box handles
         if (selected) {
             const bbox = shapeBBox(shape);
-            const bx = mapX(bbox.x + bbox.w);
-            const by = mapY(bbox.y + bbox.h);
+            const bx = mapX(bbox.x);
+            const by = mapY(bbox.y);
             const bw = bbox.w * scale;
             const bh = bbox.h * scale;
             ctx.strokeStyle = '#10b981';

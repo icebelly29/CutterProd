@@ -107,7 +107,7 @@ Native support for multi-layered cut profiles. In the Draw tab or via imported S
 - **Simulation mode** — toggle to preview job execution without a connected machine.
 
 ### Visualiser
-- **Trajectory Preview** — rendered on HTML5 Canvas with coordinate mapping from machine-mm (Y-up) to screen-px (Y-down).
+- **Trajectory Preview** — rendered on HTML5 Canvas. The visualizer maps machine coordinates to screen space, automatically handling X-axis mirroring so that the preview exactly matches the Draw tab's visual orientation despite inverse hardware kinematics.
   - Orange dots: cutting sample points. Dashed grey: travel moves. Emerald green: executed segments during simulation.
   - Gantry footprint overlay tracks the current tool position.
 - **SVG Preview** — raw browser rendering of the loaded SVG.
